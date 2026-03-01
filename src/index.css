@@ -1,0 +1,296 @@
+@import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=Share+Tech+Mono&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* Inline SVG noise — avoids external network dependency. */
+  --noise-url: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23n)' opacity='1'/%3E%3C/svg%3E");
+  --bg-0: #010409;
+  --bg-1: #050a15;
+  --bg-2: #0a0f1d;
+  --bg-3: #0d1117;
+  --bg-4: #161b22;
+  --text-1: #e6edf3;
+  --text-2: #7d8590;
+  --text-3: #484f58;
+  --border-1: rgba(255, 255, 255, 0.05);
+  --accent: #5cf5ff;
+  --accent-dim: rgba(92, 245, 255, 0.12);
+  --ok: #238636;
+  --warn: #d29922;
+  --err: #f85149;
+  --radius-panel: 14px;
+  --radius-control: 10px;
+  --specular-x: 50%;
+  --specular-y: 50%;
+  --adaptive-color: rgba(92, 245, 255, 0.05);
+  /* HUD typography — Rajdhani is geometrically close to Eurostile used in the real Iron Man HUD */
+  --font-hud: 'Rajdhani', 'Share Tech Mono', system-ui, sans-serif;
+}
+
+body {
+  margin: 0;
+  background: radial-gradient(circle at 50% 30%, var(--bg-2) 0%, var(--bg-0) 100%),
+              radial-gradient(circle at var(--specular-x) var(--specular-y), var(--adaptive-color) 0%, transparent 50%);
+  color: var(--text-1);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow: hidden;
+  transition: background 1s ease;
+}
+
+.bg-premium-gradient {
+  background: linear-gradient(135deg, #010409 0%, #050a15 50%, #0a0f1d 100%);
+}
+
+.glass-morphism {
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  background: rgba(1, 4, 9, 0.8);
+  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.05),
+              0 0 0 1px rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  position: relative;
+  overflow: hidden;
+}
+
+.glass-morphism::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at var(--specular-x) var(--specular-y), rgba(255, 255, 255, 0.08) 0%, transparent 40%);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.glass-morphism:hover::after {
+  opacity: 1;
+}
+
+.terminal-text {
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 9px;
+  line-height: 1.2;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  opacity: 0.6;
+}
+
+.frosted-glass {
+  background: rgba(1, 4, 9, 0.6);
+  -webkit-backdrop-filter: blur(24px);
+  backdrop-filter: blur(24px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5),
+              inset 0 1px 0 rgba(255, 255, 255, 0.1);
+}
+
+/* Scanlines — simple background-size pattern (cheaper than repeating-linear-gradient) */
+.holographic-overlay::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(rgba(0, 0, 0, 0) 50%, rgba(0, 0, 0, 0.06) 50%);
+  background-size: 100% 3px;
+  pointer-events: none;
+  z-index: 100;
+  opacity: 1;
+}
+
+.hex-grid {
+  background-image: radial-gradient(#0a0f1d 1px, transparent 1px);
+  background-size: 40px 40px;
+}
+
+/* GPU Accelerated Animations */
+@keyframes orbit {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.animate-orbit {
+  animation: orbit 4s linear infinite;
+  will-change: transform;
+}
+
+.animate-orbit-reverse {
+  animation: orbit 6s linear infinite reverse;
+  will-change: transform;
+}
+
+.refraction-border {
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.05);
+}
+
+.hover-glow {
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.hover-glow:hover {
+  box-shadow: 0 0 20px rgba(92, 245, 255, 0.2);
+  border-color: rgba(92, 245, 255, 0.4);
+  transform: translateY(-1px);
+}
+
+.active-press {
+  transition: transform 0.1s ease;
+}
+
+.active-press:active {
+  transform: scale(0.96);
+}
+
+*:focus-visible {
+  outline: 0;
+  box-shadow: 0 0 0 3px var(--accent-dim);
+}
+
+::selection {
+  background: rgba(92, 245, 255, 0.22);
+  color: var(--text-1);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.10);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.16);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+
+/* Custom Scrollbar Hide */
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.mask-image-gradient {
+  -webkit-mask-image: linear-gradient(to bottom, transparent, black 10%, black 90%, transparent);
+  mask-image: linear-gradient(to bottom, transparent, black 10%, black 90%, transparent);
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.3s ease-out forwards;
+}
+
+/* Noise texture utility — uses the inlined SVG, no network required. */
+.noise-overlay {
+  background-image: var(--noise-url);
+  background-repeat: repeat;
+}
+
+/* ── JARVIS HUD Utilities ──────────────────────────────────────────────────── */
+
+/* Rajdhani-based label style matching the Iron Man HUD's Eurostile aesthetic */
+.text-hud {
+  font-family: var(--font-hud);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+/* Top-bar JARVIS logotype — fixed size avoids inline style object on every render */
+.hud-title {
+  font-size: 1.25rem;
+  letter-spacing: 0.45em;
+}
+
+/* Arc-reactor glow pulse — animates ONLY opacity (GPU composited, zero repaint cost).
+   box-shadow and background are declared statically so they're rendered once; only
+   opacity changes each frame, which the compositor handles entirely on the GPU. */
+@keyframes arc-pulse {
+  0%, 100% { opacity: 0.2; }
+  50%       { opacity: 0.7; }
+}
+.arc-pulse {
+  /* Static glow — rendered once, never triggers repaint */
+  border: 1px solid rgba(92, 245, 255, 0.4);
+  box-shadow: 0 0 14px rgba(92, 245, 255, 0.25);
+  background: radial-gradient(ellipse at center, rgba(92, 245, 255, 0.08) 0%, transparent 70%);
+  /* Only opacity animates — this is the GPU-composited path */
+  animation: arc-pulse 2.4s ease-in-out infinite;
+  will-change: opacity;
+}
+
+/* HUD corner brackets — top-left (::before) + bottom-right (::after).
+   Requires position: relative on the host element.
+   Pure CSS, zero DOM nodes, zero JS. */
+.hud-corner {
+  position: relative;
+}
+.hud-corner::before {
+  content: '';
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  width: 16px;
+  height: 16px;
+  border-top: 1px solid rgba(92, 245, 255, 0.45);
+  border-left: 1px solid rgba(92, 245, 255, 0.45);
+  pointer-events: none;
+  z-index: 20;
+}
+.hud-corner::after {
+  content: '';
+  position: absolute;
+  bottom: 4px;
+  right: 4px;
+  width: 16px;
+  height: 16px;
+  border-bottom: 1px solid rgba(92, 245, 255, 0.45);
+  border-right: 1px solid rgba(92, 245, 255, 0.45);
+  pointer-events: none;
+  z-index: 20;
+}
+
+/* Terminal blink cursor for the PROCESSING indicator */
+@keyframes blink-cursor {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0; }
+}
+.blink-cursor {
+  animation: blink-cursor 1s step-end infinite;
+}
+
+/* AI bubble — subtle left-border tint, no pseudo-element scanlines (too expensive per-message) */
+.ai-bubble {
+  position: relative;
+  overflow: hidden;
+  border-left: 2px solid rgba(92, 245, 255, 0.12) !important;
+}
+
+/* Boot-sequence overlay fade-out */
+@keyframes boot-fade {
+  0%   { opacity: 1; }
+  60%  { opacity: 1; }
+  100% { opacity: 0; }
+}
+/* ─────────────────────────────────────────────────────────────────────────── */

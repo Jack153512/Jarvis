@@ -1,0 +1,63 @@
+# A.D.A - Advanced Design Assistant
+# Local LLM Version - Fully Offline & Free
+# =========================================
+
+# Core Server
+fastapi>=0.100.0
+uvicorn>=0.23.0
+python-socketio>=5.8.0
+aiohttp>=3.8.0
+
+# Local LLM (via Ollama)
+# Note: Install Ollama separately from https://ollama.ai/download
+# Then run: ollama pull qwen2.5-coder:7b-instruct
+
+# Text-to-Speech (Free, uses Edge TTS)
+# Note: Requires version 7.2.7+ for reliable audio synthesis
+edge-tts>=7.2.7
+
+# Speech-to-Text (Offline, uses Vosk)
+vosk>=0.3.45
+
+# Audio Processing
+pyaudio>=0.2.13
+numpy>=1.24.0
+
+# Vision/Camera (for hand tracking)
+opencv-python>=4.8.0
+mediapipe>=0.10.0
+pillow>=10.0.0
+mss>=9.0.0
+
+# CAD Generation (Parametric CAD)
+build123d>=0.5.0
+cadquery>=2.4.0
+
+# CAD Generation (Neural 3D - Shap-E)
+trimesh>=4.0.0
+git+https://github.com/openai/shap-e.git
+
+# Image Generation (local, via diffusers + HuggingFace)
+# Model auto-downloads on first use (~1.7 GB, cached to ~/.cache/huggingface/)
+# Requires: torch with CUDA for GPU, or falls back to CPU (slow)
+# Install torch first: pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+# (CPU-only): pip install torch torchvision
+torch>=2.0.0
+torchvision>=0.15.0
+diffusers>=0.36.0
+safetensors>=0.4.0
+accelerate>=0.26.0
+transformers>=4.36.0
+
+# Web Automation
+playwright>=1.40.0
+
+# Utilities
+python-multipart>=0.0.6
+
+# Optional: Alternative STT (if Vosk unavailable)
+# SpeechRecognition>=3.10.0
+
+# Development
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
