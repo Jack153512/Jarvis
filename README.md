@@ -89,3 +89,6 @@ Settings (identity, LLM, TTS, tools) are in `backend/settings.json`. That file i
 - **“Python backend failed to start”** — Activate the same `.venv` you used for `pip install`, or install Python 3.11 and run again (Windows uses `py -3.11`).
 - **“Ollama / model not found”** — Install Ollama and run `ollama pull qwen2.5-coder:7b-instruct`.
 - **Port 5173 in use** — Another app is using it; close it or change the port in the Vite config.
+
+## NOTE
+-This is still in W.I.P/Work in progress
