@@ -1,15 +1,3 @@
-"""
-Local LLM Integration Module using Ollama.
-
-Recommended Models (in order of preference for this project):
-1. deepseek-r1:14b - Best for CAD (97.3% MATH, superior reasoning) - RECOMMENDED
-2. qwen2.5-coder:14b-instruct - Fallback (88.4% HumanEval)
-3. qwen2.5-coder:7b-instruct - For limited VRAM
-
-To install Ollama and the recommended model:
-    1. Install Ollama: https://ollama.ai/download
-    2. Run: ollama pull deepseek-r1:14b
-"""
 
 import aiohttp
 import asyncio
