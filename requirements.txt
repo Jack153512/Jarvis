@@ -16,8 +16,9 @@ aiohttp>=3.8.0
 # Note: Requires version 7.2.7+ for reliable audio synthesis
 edge-tts>=7.2.7
 
-# Speech-to-Text (Offline, uses Vosk)
-vosk>=0.3.45
+# Speech-to-Text (Offline, multilingual — Vietnamese + English via faster-whisper)
+# Model auto-downloads on first use (~466 MB for 'small', ~145 MB for 'base')
+faster-whisper>=1.0.0
 
 # Audio Processing
 pyaudio>=0.2.13
@@ -54,9 +55,6 @@ playwright>=1.40.0
 
 # Utilities
 python-multipart>=0.0.6
-
-# Optional: Alternative STT (if Vosk unavailable)
-# SpeechRecognition>=3.10.0
 
 # Development
 pytest>=7.4.0

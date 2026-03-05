@@ -7,7 +7,7 @@ Fully offline, no paid APIs required.
 Uses:
 - Ollama with Qwen2.5-Coder-7B for AI
 - edge-tts for text-to-speech
-- Vosk for speech-to-text (optional)
+- faster-whisper for speech-to-text (via frontend audio_transcribe)
 """
 
 import sys
@@ -209,6 +209,13 @@ async def _startup():
     except Exception:
         pass
 
+    # Pre-warm faster-whisper model in background so first mic use is instant
+    try:
+        from stt_engine import preload_model
+        preload_model()
+    except Exception:
+        pass
+
     if init_agents_on_startup:
         # Initialize standalone CAD agent for direct generation
         try:
@@ -342,8 +349,8 @@ DEFAULT_SETTINGS = {
         "pitch_vi": "+0Hz"
     },
     "stt": {
-        "provider": "browser",  # "browser" or "vosk"
-        "model_path": "./models/vosk-model-small-en-us"
+        "provider": "faster-whisper",
+        "model_size": "small"
     },
     "tool_permissions": {
         "generate_cad": True,
@@ -856,6 +863,59 @@ async def shutdown(sid, data=None):
         loop_task = None
     
     os._exit(0)
+
+
+@sio.event
+async def audio_transcribe(sid, data):
+    """
+    Receive a 16 kHz mono WAV (base64) from the frontend, transcribe with
+    faster-whisper, emit the text back, and feed it to Jarvis.
+
+    Frontend always converts recordings to WAV before sending, so no ffmpeg
+    is required on the backend.
+
+    Expected data keys:
+        audio (str)     — base64-encoded WAV bytes
+        mime_type (str) — should be 'audio/wav'
+        language (str)  — optional ISO hint ('vi', 'en'). Omit for auto-detect.
+    """
+    import base64
+    from stt_engine import transcribe_bytes
+
+    if not data:
+        await sio.emit("transcription", {"text": "", "error": "no data"}, room=sid)
+        return
+
+    audio_b64 = data.get("audio")
+    mime_type  = data.get("mime_type") or "audio/wav"
+    language   = data.get("language") or None
+
+    if not audio_b64:
+        await sio.emit("transcription", {"text": "", "error": "no audio data"}, room=sid)
+        return
+
+    try:
+        audio_bytes = base64.b64decode(audio_b64)
+    except Exception as e:
+        logger.error("[STT] base64 decode failed: %s", e)
+        await sio.emit("transcription", {"text": "", "error": f"audio decode failed: {e}"}, room=sid)
+        return
+
+    logger.info("[STT] Received %d bytes (%s) from %s", len(audio_bytes), mime_type, sid)
+
+    result = await asyncio.to_thread(transcribe_bytes, audio_bytes, mime_type, language)
+
+    text          = (result.get("text") or "").strip()
+    detected_lang = result.get("language") or "unknown"
+    error         = result.get("error")
+
+    if error:
+        logger.warning("[STT] Error reported: %s", error)
+
+    await sio.emit("transcription", {"text": text, "language": detected_lang, "error": error}, room=sid)
+
+    if text and not error and audio_loop:
+        await audio_loop.process_text_input(text)
 
 
 @sio.event

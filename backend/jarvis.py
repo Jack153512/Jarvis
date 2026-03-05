@@ -5,9 +5,10 @@ Local LLM Version - Fully Offline & Free
 Uses:
 - Ollama with Qwen2.5-Coder-7B for AI capabilities
 - edge-tts for text-to-speech
-- Vosk for speech-to-text (optional, can use browser Web Speech API)
 - build123d for CAD generation
 - Playwright for web automation
+
+Speech-to-text is handled by the frontend (faster-whisper via backend audio_transcribe).
 
 No paid APIs. No cloud dependencies. Fully open-source.
 """
@@ -36,7 +37,6 @@ from typing import Optional, Callable, Dict, Any, List
 # Local imports
 from local_llm import LocalLLM, LLMConfig, get_llm
 from tts_engine import TTSEngine, TTSSentenceBuffer, get_tts
-from stt_engine import STTEngine, get_stt
 from tools import tools_list
 from learning import LearningStore, LearningPolicy
 
@@ -237,10 +237,6 @@ class AudioLoop:
         self._tts_buffer: Optional[TTSSentenceBuffer] = None
         self._tts_chunk_count = 0
         
-        # Initialize STT (optional - can use browser Web Speech API instead)
-        self.stt = STTEngine()
-        self.stt_available = False
-        
         # Agents - Using Shap-E Neural 3D for direct mesh generation (no LLM code)
         try:
             from cad_agent_shape import ShapECadAgent as TwoStageCadAgent
@@ -290,9 +286,6 @@ class AudioLoop:
         current_dir = os.path.dirname(os.path.abspath(__file__))
         project_root = os.path.dirname(current_dir)
         self.project_manager = ProjectManager(project_root)
-        
-        # Chat buffer for logging
-        self.chat_buffer = {"sender": None, "text": ""}
 
     def _compose_system_prompt(self, lang: str) -> str:
         return (
@@ -1329,13 +1322,6 @@ class AudioLoop:
             return
         
         print("[JARVIS] LLM ready!")
-        
-        # Initialize STT (optional)
-        self.stt_available = self.stt.initialize()
-        if self.stt_available:
-            print("[JARVIS] STT ready (Vosk)")
-        else:
-            print("[JARVIS] STT not available - using browser Web Speech API")
         
         # Sync project state
         if self.on_project_update:

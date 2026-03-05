@@ -259,15 +259,16 @@ function App() {
     const currentTTSAudioRef = useRef(null);   // Current playing Audio element
     const ttsStoppedRef = useRef(false);       // Flag to stop playback
 
-    const speechRecognitionRef = useRef(null);
-    const speechShouldRunRef = useRef(false);
-    const speechFinalBufferRef = useRef('');
-    const speechCommitTimerRef = useRef(null);
+    // Push-to-talk MediaRecorder refs (replaces Web Speech API)
+    const mediaRecorderRef = useRef(null);
+    const pttChunksRef = useRef([]);
+    const pttMimeTypeRef = useRef('audio/webm');
+    const [isRecording, setIsRecording] = useState(false);
     const lastSentUtteranceRef = useRef('');
     const micLevelRef = useRef(0);
-    const sttLanguageRef = useRef((navigator.language && navigator.language.toLowerCase().includes('vi')) ? 'vi-VN' : 'en-US');
-    const sttUnlockedRef = useRef(false);
     const ttsEndedRef = useRef(false);
+    // Ref-copy of selectedMicId so async PTT callbacks don't capture stale state
+    const selectedMicIdRef = useRef(null);
     
     // Initialization guards to prevent duplicate initialization
     const handLandmarkerInitializedRef = useRef(false);
@@ -913,9 +914,48 @@ function App() {
 
         socket.on('transcription', (data) => {
             const sender = data?.sender;
+            const rawText = data?.text ?? '';
+            const text = rawText.trim ? rawText.trim() : String(rawText).trim();
+            const error = data?.error;
+
+            // ── Voice transcription result (no sender = user's spoken words) ──────
+            // audio_transcribe in server.py emits without a sender field.
+            // This must be treated as the user's message and added to the chat.
+            if (!sender) {
+                if (error && !text) {
+                    console.error('[STT] Backend error:', error);
+                    pushActivity(`Voice error: ${error}`);
+                    return;
+                }
+                if (!text) return;
+                // Dedup: process_text_input also emits a 'transcription' with
+                // sender=user_name for the same text — ignore that duplicate below.
+                // Here we guard against the no-sender copy arriving twice.
+                if (text === lastSentUtteranceRef.current) return;
+                lastSentUtteranceRef.current = text;
+
+                if (isTTSPlayingRef.current) {
+                    stopTTSPlayback();
+                    safeEmit('stop_tts');
+                }
+
+                setMessages(prev => [
+                    ...prev,
+                    { sender: 'You', text, time: new Date().toLocaleTimeString() },
+                ]);
+                pushActivity('Voice message sent');
+                return;
+            }
+
+            // ── Filter duplicate user-side messages from process_text_input ───────
+            // jarvis.py emits on_transcription({"sender": user_name, "text": text})
+            // at the start of process_text_input — we already showed the message above.
             if (sender === 'User' || sender === identityRef.current.user_name) {
                 return;
             }
+
+            // ── AI response streaming — accumulate all tokens into one bubble ─────
+            if (!rawText) return;
             setIsTyping(true);
             const now = new Date().toLocaleTimeString();
             // Capture the active conversation ID at event time so the debounce save
@@ -925,10 +965,11 @@ function App() {
             setMessages(prev => {
                 const lastMsg = prev[prev.length - 1];
                 let updated;
-                if (lastMsg && lastMsg.sender === data.sender) {
+                if (lastMsg && lastMsg.sender === sender) {
+                    // Append token to the existing AI bubble — never create a new one.
                     updated = {
                         ...lastMsg,
-                        text: lastMsg.text + data.text,
+                        text: lastMsg.text + rawText,
                         _convId: lastMsg._convId ?? convIdAtEventTime,
                     };
                     // Setting a ref inside an updater is safe: Strict Mode runs the
@@ -936,7 +977,8 @@ function App() {
                     lastAiMsgRef.current = updated;
                     return [...prev.slice(0, -1), updated];
                 } else {
-                    updated = { sender: data.sender, text: data.text, time: now, _convId: convIdAtEventTime };
+                    // First token for this AI turn — open a new bubble.
+                    updated = { sender, text: rawText, time: now, _convId: convIdAtEventTime };
                     lastAiMsgRef.current = updated;
                     return [...prev, updated];
                 }
@@ -1067,108 +1109,9 @@ function App() {
         };
         initHandLandmarker();
 
-        try {
-            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-            if (SpeechRecognition) {
-                const rec = new SpeechRecognition();
-                rec.continuous = true;
-                rec.interimResults = true;
-                rec.maxAlternatives = 1;
-                rec.lang = sttLanguageRef.current;
-
-                rec.onresult = (event) => {
-                    try {
-                        const allowUpdate = !isTTSPlayingRef.current || micLevelRef.current >= 18;
-                        if (!allowUpdate) {
-                            return;
-                        }
-                        let interim = '';
-                        for (let i = event.resultIndex; i < event.results.length; i++) {
-                            const result = event.results[i];
-                            const transcript = result?.[0]?.transcript ?? '';
-                            if (!transcript) continue;
-                            if (result.isFinal) {
-                                speechFinalBufferRef.current += transcript;
-                            } else {
-                                interim += transcript;
-                            }
-                        }
-
-                        const draftText = `${speechFinalBufferRef.current}${interim}`.trim();
-                        if (draftText) {
-                            if (isTTSPlayingRef.current) {
-                                stopTTSPlayback();
-                                safeEmit('stop_tts');
-                            }
-
-                            setMessages(prev => {
-                                const last = prev[prev.length - 1];
-                                if (last && last.sender === 'You' && last.draft === true) {
-                                    return [...prev.slice(0, -1), { ...last, text: draftText }];
-                                }
-                                return [...prev, { sender: 'You', text: draftText, time: new Date().toLocaleTimeString(), draft: true }];
-                            });
-                        }
-
-                        if (speechCommitTimerRef.current) {
-                            clearTimeout(speechCommitTimerRef.current);
-                        }
-
-                        speechCommitTimerRef.current = setTimeout(() => {
-                            const finalText = speechFinalBufferRef.current.trim();
-                            const shouldSend = finalText && finalText !== lastSentUtteranceRef.current;
-                            if (shouldSend) {
-                                lastSentUtteranceRef.current = finalText;
-
-                                setMessages(prev => {
-                                    const last = prev[prev.length - 1];
-                                    if (last && last.sender === 'You' && last.draft === true) {
-                                        return [...prev.slice(0, -1), { ...last, text: finalText, draft: false }];
-                                    }
-                                    return [...prev, { sender: 'You', text: finalText, time: new Date().toLocaleTimeString(), draft: false }];
-                                });
-
-                                stopTTSPlayback();
-                                safeEmit('stop_tts');
-                                safeEmit('user_input', { text: finalText });
-                                pushActivity('Voice message sent');
-                            }
-                            speechFinalBufferRef.current = '';
-                        }, 600);
-                    } catch (e) {
-                        console.error('[STT] onresult error:', e);
-                    }
-                };
-
-                rec.onerror = () => {
-                };
-
-                rec.onend = () => {
-                    if (!speechShouldRunRef.current) return;
-                    setTimeout(() => {
-                        if (!speechShouldRunRef.current) return;
-                        try {
-                            rec.start();
-                        } catch (_) {
-                        }
-                    }, 250);
-                };
-
-                speechRecognitionRef.current = rec;
-
-                const unlock = () => {
-                    if (sttUnlockedRef.current) return;
-                    sttUnlockedRef.current = true;
-                    if (!speechShouldRunRef.current) return;
-                    try {
-                        rec.start();
-                    } catch (_) {
-                    }
-                };
-                window.addEventListener('pointerdown', unlock, { once: true });
-            }
-        } catch (_) {
-        }
+        // Note: voice transcription and AI streaming are both handled by the
+        // single 'transcription' socket.on listener registered above (line ~915).
+        // A second listener here was the root cause of split/duplicate messages.
 
         // ── IPC backend-status push listener (Electron only) ─────────────────
         // Main process sends 'backend-status' the instant the backend becomes
@@ -1227,20 +1170,7 @@ function App() {
             socket.off('browser_frame');
 
             stopTTSPlayback();
-
-            if (speechCommitTimerRef.current) {
-                clearTimeout(speechCommitTimerRef.current);
-                speechCommitTimerRef.current = null;
-            }
-            if (speechRecognitionRef.current) {
-                try {
-                    speechRecognitionRef.current.onresult = null;
-                    speechRecognitionRef.current.onend = null;
-                    speechRecognitionRef.current.onerror = null;
-                    speechRecognitionRef.current.stop();
-                } catch (_) {
-                }
-            }
+            stopPTT();
             
             // Note: HandLandmarker cleanup is intentionally not reset here
             // to allow the instance to persist across hot reloads.
@@ -1263,25 +1193,13 @@ function App() {
         };
     }, []);
 
+    // Push-to-talk: start recording when mic is unmuted, stop when muted
     useEffect(() => {
-        const rec = speechRecognitionRef.current;
-        if (!rec) return;
-
-        const shouldRun = !isMuted && isConnected;
-        speechShouldRunRef.current = shouldRun;
-
-        if (!shouldRun) {
-            try {
-                rec.stop();
-            } catch (_) {
-            }
-            return;
-        }
-
-        try {
-            rec.lang = sttLanguageRef.current;
-            rec.start();
-        } catch (_) {
+        if (!isConnected) return;
+        if (!isMuted) {
+            startPTT();
+        } else {
+            stopPTT();
         }
     }, [isMuted, isConnected]);
 
@@ -1294,7 +1212,10 @@ function App() {
 
     // Persist device selections
     useEffect(() => {
-        if (selectedMicId) localStorage.setItem('selectedMicId', selectedMicId);
+        if (selectedMicId) {
+            localStorage.setItem('selectedMicId', selectedMicId);
+            selectedMicIdRef.current = selectedMicId;
+        }
     }, [selectedMicId]);
 
     useEffect(() => {
@@ -1309,6 +1230,148 @@ function App() {
     useEffect(() => {
         if (selectedMicId) startMicVisualizer(selectedMicId);
     }, [selectedMicId]);
+
+    // ── Push-to-talk helpers (faster-whisper via backend) ─────────────────────
+
+    /**
+     * Decode an audio blob and re-encode as 16 kHz mono 16-bit PCM WAV.
+     * Uses OfflineAudioContext (purely in-memory, no hardware access) so it
+     * never conflicts with the live AudioContext used by the mic visualizer.
+     */
+    const _blobToWav = async (blob) => {
+        const arrayBuffer = await blob.arrayBuffer();
+
+        // Step 1: Decode at the blob's native sample rate using a temporary live context.
+        // We create it, decode, then immediately close it to free hardware resources.
+        const decodeCtx = new (window.AudioContext || window.webkitAudioContext)();
+        let decoded;
+        try {
+            // slice(0) forces a detached copy so decodeAudioData can take ownership safely
+            decoded = await decodeCtx.decodeAudioData(arrayBuffer.slice(0));
+        } finally {
+            try { decodeCtx.close(); } catch (_) {}
+        }
+
+        if (!decoded || decoded.length === 0) throw new Error('decoded buffer is empty');
+
+        // Step 2: Resample to 16 kHz mono via OfflineAudioContext (no device, no conflicts).
+        const SR = 16000;
+        const numSamples = Math.ceil(decoded.duration * SR);
+        if (numSamples <= 0) throw new Error('audio duration is zero');
+
+        const offCtx = new OfflineAudioContext(1, numSamples, SR);
+        const src = offCtx.createBufferSource();
+        src.buffer = decoded;
+        src.connect(offCtx.destination);
+        src.start(0);
+        const rendered = await offCtx.startRendering();
+        const samples = rendered.getChannelData(0);
+
+        // Step 3: Write WAV header + int16 PCM samples
+        const wavBuffer = new ArrayBuffer(44 + samples.length * 2);
+        const view = new DataView(wavBuffer);
+        const writeStr = (off, str) => {
+            for (let i = 0; i < str.length; i++) view.setUint8(off + i, str.charCodeAt(i));
+        };
+        writeStr(0, 'RIFF');
+        view.setUint32(4,  36 + samples.length * 2, true);
+        writeStr(8, 'WAVE');
+        writeStr(12, 'fmt ');
+        view.setUint32(16, 16,       true);
+        view.setUint16(20, 1,        true);  // PCM
+        view.setUint16(22, 1,        true);  // mono
+        view.setUint32(24, SR,       true);
+        view.setUint32(28, SR * 2,   true);
+        view.setUint16(32, 2,        true);
+        view.setUint16(34, 16,       true);
+        writeStr(36, 'data');
+        view.setUint32(40, samples.length * 2, true);
+        let off = 44;
+        for (let i = 0; i < samples.length; i++) {
+            const s = Math.max(-1, Math.min(1, samples[i]));
+            view.setInt16(off, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+            off += 2;
+        }
+        return wavBuffer;
+    };
+
+    const startPTT = async () => {
+        if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') return;
+        try {
+            // CRITICAL: Stop the mic visualizer BEFORE opening a new getUserMedia stream.
+            // Having two simultaneous captures on the same hardware device causes an
+            // access violation (0xC0000005) and crashes the Electron renderer.
+            stopMicVisualizer();
+
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+            const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+                ? 'audio/webm;codecs=opus'
+                : MediaRecorder.isTypeSupported('audio/webm')
+                    ? 'audio/webm'
+                    : 'audio/ogg';
+            pttMimeTypeRef.current = mimeType;
+            pttChunksRef.current = [];
+
+            // Capture current mic device id so the onstop callback can restart the visualizer
+            const capturedMicId = selectedMicIdRef.current;
+
+            const recorder = new MediaRecorder(stream, { mimeType });
+            recorder.ondataavailable = (e) => {
+                if (e.data && e.data.size > 0) pttChunksRef.current.push(e.data);
+            };
+            recorder.onstop = async () => {
+                // Release the recording stream immediately
+                stream.getTracks().forEach(t => t.stop());
+
+                // Restart the visualizer now that the hardware is free
+                if (capturedMicId) startMicVisualizer(capturedMicId);
+
+                const chunks = pttChunksRef.current;
+                pttChunksRef.current = [];
+                if (!chunks.length) return;
+                const rawBlob = new Blob(chunks, { type: pttMimeTypeRef.current });
+                if (rawBlob.size < 1000) return;
+
+                try {
+                    const wavBuffer = await _blobToWav(rawBlob);
+                    const uint8 = new Uint8Array(wavBuffer);
+                    let binary = '';
+                    const CHUNK = 8192;
+                    for (let i = 0; i < uint8.length; i += CHUNK) {
+                        binary += String.fromCharCode(...uint8.subarray(i, i + CHUNK));
+                    }
+                    safeEmit('audio_transcribe', { audio: btoa(binary), mime_type: 'audio/wav' });
+                    pushActivity('Processing voice…');
+                } catch (err) {
+                    console.error('[PTT] encode/convert error:', err);
+                    pushActivity(`Voice error: ${err.message}`);
+                }
+            };
+
+            recorder.start(250);
+            mediaRecorderRef.current = recorder;
+            setIsRecording(true);
+            pushActivity('Microphone active');
+        } catch (err) {
+            console.error('[PTT] start error:', err.name, err.message);
+            pushActivity(`Mic error: ${err.name}`);
+            // Restore visualizer if startPTT failed mid-way
+            const mid = selectedMicIdRef.current;
+            if (mid) startMicVisualizer(mid);
+        }
+    };
+
+    const stopPTT = () => {
+        const rec = mediaRecorderRef.current;
+        if (!rec) return;
+        try {
+            if (rec.state !== 'inactive') rec.stop();
+        } catch (_) {}
+        mediaRecorderRef.current = null;
+        setIsRecording(false);
+    };
+    // ──────────────────────────────────────────────────────────────────────────
 
     const startMicVisualizer = async (deviceId) => {
         // Clean up any existing resources first
@@ -1945,11 +2008,10 @@ function App() {
         if (!isConnected) return;
 
         if (isMuted) {
-            safeEmit('resume_audio');
             setIsMuted(false);
             pushActivity('Microphone unmuted');
         } else {
-            safeEmit('pause_audio');
+            stopPTT();
             setIsMuted(true);
             pushActivity('Microphone muted');
         }

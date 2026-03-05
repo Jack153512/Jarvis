@@ -357,7 +357,7 @@ function startPythonBackend() {
     // On Windows use the 'py' launcher with an explicit version flag so we
     // always get the Python that has all ML packages installed (3.11).
     // The bare 'python' command can resolve to a different version (e.g. 3.14)
-    // whose site-packages lack torch / diffusers / vosk / etc.
+    // whose site-packages lack torch / diffusers / faster-whisper / etc.
     // On non-Windows fall back to 'python3'.
     const [pyExe, pyArgPrefix] = process.platform === 'win32'
         ? ['py', ['-3.11']]
