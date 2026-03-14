@@ -23,6 +23,8 @@ _whisper_lock = threading.Lock()
 
 DEFAULT_MODEL_SIZE = os.environ.get("WHISPER_MODEL", "small")
 CACHE_DIR = os.path.join(os.path.dirname(__file__), "..", "models", "whisper")
+# Reject oversized payloads to avoid OOM and long-running inference
+MAX_AUDIO_BYTES = int(os.environ.get("STT_MAX_AUDIO_BYTES", 5 * 1024 * 1024))  # 5 MB
 
 # Set to True after a successful load; False after a hard failure.
 _model_load_attempted = False
@@ -55,7 +57,6 @@ def _get_model(model_size: str = DEFAULT_MODEL_SIZE):
                 "Run:  py -3.11 -m pip install faster-whisper"
             )
             logger.error("[STT] %s", _model_load_error)
-            print(f"[STT] {_model_load_error}")
             return None
 
         # Detect CUDA availability
@@ -68,8 +69,7 @@ def _get_model(model_size: str = DEFAULT_MODEL_SIZE):
         compute = "float16" if device == "cuda" else "int8"
         os.makedirs(CACHE_DIR, exist_ok=True)
 
-        logger.info("[STT] Loading faster-whisper '%s' (%s/%s)…", model_size, device, compute)
-        print(f"[STT] Loading faster-whisper '{model_size}' ({device}/{compute})…")
+        logger.info("[STT] Loading faster-whisper '%s' (%s/%s)", model_size, device, compute)
 
         try:
             _whisper_model = WhisperModel(
@@ -79,13 +79,11 @@ def _get_model(model_size: str = DEFAULT_MODEL_SIZE):
                 download_root=CACHE_DIR,
             )
             logger.info("[STT] faster-whisper ready ('%s', %s/%s)", model_size, device, compute)
-            print(f"[STT] faster-whisper ready ('{model_size}', {device}/{compute})")
             return _whisper_model
         except Exception as e:
             _model_load_failed = True
             _model_load_error = str(e)
             logger.error("[STT] Failed to load model: %s", e)
-            print(f"[STT] Failed to load model: {e}")
             return None
 
 
@@ -115,6 +113,10 @@ def transcribe_bytes(
     if not audio_bytes:
         return {"text": "", "language": language or "unknown", "error": "empty audio"}
 
+    if len(audio_bytes) > MAX_AUDIO_BYTES:
+        logger.warning("[STT] Rejected oversized audio: %d bytes (max %d)", len(audio_bytes), MAX_AUDIO_BYTES)
+        return {"text": "", "language": language or "unknown", "error": "audio too large"}
+
     suffix = ".wav" if "wav" in (mime_type or "").lower() else _mime_to_suffix(mime_type)
 
     tmp_path = None
@@ -137,12 +139,10 @@ def transcribe_bytes(
         detected_lang = info.language if info else (language or "unknown")
 
         logger.info("[STT] [%s] %r", detected_lang, text)
-        print(f"[STT] [{detected_lang}] {text!r}")
         return {"text": text, "language": detected_lang, "error": None}
 
     except Exception as e:
         logger.error("[STT] Transcription error: %s", e)
-        print(f"[STT] Transcription error: {e}")
         return {"text": "", "language": language or "unknown", "error": str(e)}
     finally:
         if tmp_path:
@@ -165,7 +165,9 @@ def _mime_to_suffix(mime_type: str) -> str:
     }.get(mime_type, ".webm")
 
 
-def preload_model(model_size: str = DEFAULT_MODEL_SIZE):
-    """Pre-warm the model in a background thread at server startup."""
-    t = threading.Thread(target=_get_model, args=(model_size,), daemon=True, name="whisper-preload")
-    t.start()
+def ensure_model_loaded(model_size: Optional[str] = None) -> None:
+    """
+    Load the STT model if not already loaded. Sync, thread-safe.
+    Call from server startup via asyncio.to_thread(ensure_model_loaded, model_size).
+    """
+    _get_model(model_size or DEFAULT_MODEL_SIZE)

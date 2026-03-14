@@ -1,14 +1,12 @@
 import React from 'react';
-import { Mic, MicOff, Settings, Power, Video, VideoOff, Hand, Globe, Box } from 'lucide-react';
+import { Settings, Power, Video, VideoOff, Hand, Globe, Box } from 'lucide-react';
 
 const ToolsModule = ({
     isConnected,
-    isMuted,
     isVideoOn,
     isHandTrackingEnabled,
     showSettings,
     onTogglePower,
-    onToggleMute,
     onToggleVideo,
     onToggleSettings,
     onToggleHand,
@@ -46,21 +44,6 @@ const ToolsModule = ({
                     title={isConnected ? 'Disconnect' : 'Connect'}
                 >
                     <Power size={24} />
-                </button>
-
-                {/* Mute Button */}
-                <button
-                    onClick={onToggleMute}
-                    disabled={!isConnected}
-                    className={`p-3 rounded-full border-2 transition-all duration-300 ${!isConnected
-                        ? 'border-gray-800 text-gray-800 cursor-not-allowed'
-                        : isMuted
-                            ? 'border-red-500 bg-red-500/10 text-red-500 hover:bg-red-500/20 shadow-[0_0_15px_rgba(239,68,68,0.3)]'
-                            : 'border-cyan-500 bg-cyan-500/10 text-cyan-500 hover:bg-cyan-500/20 shadow-[0_0_15px_rgba(6,182,212,0.3)]'
-                        } `}
-                    title={isMuted ? 'Unmute' : 'Mute'}
-                >
-                    {isMuted ? <MicOff size={24} /> : <Mic size={24} />}
                 </button>
 
                 {/* Video Button */}

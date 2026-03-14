@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "cross-env COMSPEC=C:\\Windows\\System32\\cmd.exe PATH=C:\\Windows\\System32;${PATH} concurrently --success first -k \"node .\\node_modules\\vite\\bin\\vite.js\" \"node .\\node_modules\\wait-on\\lib\\wait-on.js tcp:5173 && node .\\node_modules\\electron\\cli.js .\"",
     "build": "cross-env PATH=C:\\Windows\\System32;${PATH} node .\\node_modules\\vite\\bin\\vite.js build",
-    "start": "cross-env PATH=C:\\Windows\\System32;${PATH} node .\\node_modules\\electron\\cli.js ."
+    "start": "cross-env PATH=C:\\Windows\\System32;${PATH} node .\\node_modules\\electron\\cli.js .",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "keywords": [],
   "author": "",
@@ -27,6 +29,8 @@
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.2.1",
+    "jsdom": "^25.0.0",
+    "vitest": "^2.0.0",
     "autoprefixer": "^10.4.17",
     "concurrently": "^8.2.2",
     "cross-env": "^7.0.3",

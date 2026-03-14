@@ -1,5 +1,5 @@
 import React, { useMemo, useRef, useState } from 'react';
-import { AlertTriangle, Bell, Activity, Sliders, Wifi, WifiOff, Mic, MicOff, Video, VideoOff, X, CheckCheck } from 'lucide-react';
+import { AlertTriangle, Bell, Activity, Sliders, Wifi, WifiOff, Video, VideoOff, X, CheckCheck } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
 
 // ── Severity helpers ──────────────────────────────────────────────────────────
@@ -158,13 +158,11 @@ function AlertPanel({
     status,
     socketConnected,
     isConnected,
-    isMuted,
     isVideoOn,
     isHandTrackingEnabled,
     recentLogs,
     fps,
     onTogglePower,
-    onToggleMute,
     onToggleVideo,
 }) {
     const [dismissed, setDismissed] = useState(new Set());
@@ -297,19 +295,13 @@ function AlertPanel({
             <div className="p-3 flex flex-col gap-2 shrink-0">
                 <SectionHeader icon={<Sliders size={11} />} title="QUICK CONTROLS" />
 
-                <div className="grid grid-cols-3 gap-1.5">
+                <div className="grid grid-cols-2 gap-1.5">
                     <QuickControl
                         icon={isConnected ? <Wifi size={13} /> : <WifiOff size={13} />}
                         label="SESSION"
                         active={isConnected}
                         onClick={onTogglePower}
                         activeColor="#2ee59d"
-                    />
-                    <QuickControl
-                        icon={isMuted ? <MicOff size={13} /> : <Mic size={13} />}
-                        label="MIC"
-                        active={!isMuted}
-                        onClick={onToggleMute}
                     />
                     <QuickControl
                         icon={isVideoOn ? <Video size={13} /> : <VideoOff size={13} />}

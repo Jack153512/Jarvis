@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef, useCallback } from 'react';
+import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import io from 'socket.io-client';
 
 import Visualizer from './components/Visualizer';
@@ -112,7 +112,6 @@ function App() {
     const [isAuthenticated, setIsAuthenticated] = useState(true);
 
     const [isConnected, setIsConnected] = useState(true); // Power state DEFAULT ON
-    const [isMuted, setIsMuted] = useState(true); // Mic state DEFAULT MUTED
     const [isVideoOn, setIsVideoOn] = useState(false); // Video state
     const [messages, setMessages] = useState([]);
     const [inputValue, setInputValue] = useState('');
@@ -168,16 +167,13 @@ function App() {
 
     // RESTORED STATE
     const [aiAudioData, setAiAudioData] = useState(new Array(64).fill(0));
-    const [micAudioData, setMicAudioData] = useState(new Array(32).fill(0));
     const [fps, setFps] = useState(0);
 
-    // Device states - microphones, speakers, webcams
-    const [micDevices, setMicDevices] = useState([]);
+    // Device states - speakers, webcams
     const [speakerDevices, setSpeakerDevices] = useState([]);
     const [webcamDevices, setWebcamDevices] = useState([]);
 
     // Selected device IDs - restored from localStorage
-    const [selectedMicId, setSelectedMicId] = useState(() => localStorage.getItem('selectedMicId') || '');
     const [selectedSpeakerId, setSelectedSpeakerId] = useState(() => localStorage.getItem('selectedSpeakerId') || '');
     const [selectedWebcamId, setSelectedWebcamId] = useState(() => localStorage.getItem('selectedWebcamId') || '');
     const [showSettings, setShowSettings] = useState(false);
@@ -246,29 +242,13 @@ function App() {
     const cursorTrailRef = useRef([]);
     const [ripples, setRipples] = useState([]);
 
-    // Web Audio Context for Mic Visualization
-    const audioContextRef = useRef(null);
-    const analyserRef = useRef(null);
-    const sourceRef = useRef(null);
-    const animationFrameRef = useRef(null);
-    const micStreamRef = useRef(null);
-    
     const ttsAudioContextRef = useRef(null);
     const ttsAudioQueueRef = useRef([]);       // Queue of { audio: base64, index: number }
     const isTTSPlayingRef = useRef(false);
     const currentTTSAudioRef = useRef(null);   // Current playing Audio element
     const ttsStoppedRef = useRef(false);       // Flag to stop playback
 
-    // Push-to-talk MediaRecorder refs (replaces Web Speech API)
-    const mediaRecorderRef = useRef(null);
-    const pttChunksRef = useRef([]);
-    const pttMimeTypeRef = useRef('audio/webm');
-    const [isRecording, setIsRecording] = useState(false);
-    const lastSentUtteranceRef = useRef('');
-    const micLevelRef = useRef(0);
     const ttsEndedRef = useRef(false);
-    // Ref-copy of selectedMicId so async PTT callbacks don't capture stale state
-    const selectedMicIdRef = useRef(null);
     
     // Initialization guards to prevent duplicate initialization
     const handLandmarkerInitializedRef = useRef(false);
@@ -398,7 +378,6 @@ function App() {
             return next.length > 80 ? next.slice(next.length - 80) : next;
         });
     };
-
     const safeEmit = (event, payload) => {
         if (socket && socket.connected) {
             try {
@@ -619,24 +598,14 @@ function App() {
 
     // Auto-Connect Model on Start
     useEffect(() => {
-        if (isConnected && isAuthenticated && socketConnected && micDevices.length > 0 && !hasAutoConnectedRef.current) {
+        if (isConnected && isAuthenticated && socketConnected && !hasAutoConnectedRef.current) {
             hasAutoConnectedRef.current = true;
-
             const timer = setTimeout(() => {
-                const index = micDevices.findIndex(d => d.deviceId === selectedMicId);
-                const queryDevice = micDevices.find(d => d.deviceId === selectedMicId);
-                const deviceName = queryDevice ? queryDevice.label : null;
-                console.log("Auto-connecting to model with device:", deviceName, "Index:", index);
-
                 setStatus('Connecting...');
-                safeEmit('start_audio', {
-                    device_index: index >= 0 ? index : null,
-                    device_name: deviceName,
-                    muted: isMuted
-                });
+                safeEmit('start_audio', { device_index: null, device_name: null, muted: true });
             }, 500);
         }
-    }, [isConnected, isAuthenticated, socketConnected, micDevices, selectedMicId]);
+    }, [isConnected, isAuthenticated, socketConnected]);
 
     useEffect(() => {
         // ── Backend probe helpers ──────────────────────────────────────────────
@@ -918,35 +887,6 @@ function App() {
             const text = rawText.trim ? rawText.trim() : String(rawText).trim();
             const error = data?.error;
 
-            // ── Voice transcription result (no sender = user's spoken words) ──────
-            // audio_transcribe in server.py emits without a sender field.
-            // This must be treated as the user's message and added to the chat.
-            if (!sender) {
-                if (error && !text) {
-                    console.error('[STT] Backend error:', error);
-                    pushActivity(`Voice error: ${error}`);
-                    return;
-                }
-                if (!text) return;
-                // Dedup: process_text_input also emits a 'transcription' with
-                // sender=user_name for the same text — ignore that duplicate below.
-                // Here we guard against the no-sender copy arriving twice.
-                if (text === lastSentUtteranceRef.current) return;
-                lastSentUtteranceRef.current = text;
-
-                if (isTTSPlayingRef.current) {
-                    stopTTSPlayback();
-                    safeEmit('stop_tts');
-                }
-
-                setMessages(prev => [
-                    ...prev,
-                    { sender: 'You', text, time: new Date().toLocaleTimeString() },
-                ]);
-                pushActivity('Voice message sent');
-                return;
-            }
-
             // ── Filter duplicate user-side messages from process_text_input ───────
             // jarvis.py emits on_transcription({"sender": user_name, "text": text})
             // at the start of process_text_input — we already showed the message above.
@@ -1058,16 +998,8 @@ function App() {
             const audioOutputs = devs.filter(d => d.kind === 'audiooutput');
             const videoInputs = devs.filter(d => d.kind === 'videoinput');
 
-            setMicDevices(audioInputs);
             setSpeakerDevices(audioOutputs);
             setWebcamDevices(videoInputs);
-
-            const savedMicId = localStorage.getItem('selectedMicId');
-            if (savedMicId && audioInputs.some(d => d.deviceId === savedMicId)) {
-                setSelectedMicId(savedMicId);
-            } else if (audioInputs.length > 0) {
-                setSelectedMicId(audioInputs[0].deviceId);
-            }
 
             const savedSpeakerId = localStorage.getItem('selectedSpeakerId');
             if (savedSpeakerId && audioOutputs.some(d => d.deviceId === savedSpeakerId)) {
@@ -1170,8 +1102,7 @@ function App() {
             socket.off('browser_frame');
 
             stopTTSPlayback();
-            stopPTT();
-            
+
             // Note: HandLandmarker cleanup is intentionally not reset here
             // to allow the instance to persist across hot reloads.
             // Release camera hardware when the component unmounts.
@@ -1193,15 +1124,6 @@ function App() {
         };
     }, []);
 
-    // Push-to-talk: start recording when mic is unmuted, stop when muted
-    useEffect(() => {
-        if (!isConnected) return;
-        if (!isMuted) {
-            startPTT();
-        } else {
-            stopPTT();
-        }
-    }, [isMuted, isConnected]);
 
     useEffect(() => {
         if (socket.connected) {
@@ -1212,250 +1134,12 @@ function App() {
 
     // Persist device selections
     useEffect(() => {
-        if (selectedMicId) {
-            localStorage.setItem('selectedMicId', selectedMicId);
-            selectedMicIdRef.current = selectedMicId;
-        }
-    }, [selectedMicId]);
-
-    useEffect(() => {
         if (selectedSpeakerId) localStorage.setItem('selectedSpeakerId', selectedSpeakerId);
     }, [selectedSpeakerId]);
 
     useEffect(() => {
         if (selectedWebcamId) localStorage.setItem('selectedWebcamId', selectedWebcamId);
     }, [selectedWebcamId]);
-
-    // Start/Stop Mic Visualizer
-    useEffect(() => {
-        if (selectedMicId) startMicVisualizer(selectedMicId);
-    }, [selectedMicId]);
-
-    // ── Push-to-talk helpers (faster-whisper via backend) ─────────────────────
-
-    /**
-     * Decode an audio blob and re-encode as 16 kHz mono 16-bit PCM WAV.
-     * Uses OfflineAudioContext (purely in-memory, no hardware access) so it
-     * never conflicts with the live AudioContext used by the mic visualizer.
-     */
-    const _blobToWav = async (blob) => {
-        const arrayBuffer = await blob.arrayBuffer();
-
-        // Step 1: Decode at the blob's native sample rate using a temporary live context.
-        // We create it, decode, then immediately close it to free hardware resources.
-        const decodeCtx = new (window.AudioContext || window.webkitAudioContext)();
-        let decoded;
-        try {
-            // slice(0) forces a detached copy so decodeAudioData can take ownership safely
-            decoded = await decodeCtx.decodeAudioData(arrayBuffer.slice(0));
-        } finally {
-            try { decodeCtx.close(); } catch (_) {}
-        }
-
-        if (!decoded || decoded.length === 0) throw new Error('decoded buffer is empty');
-
-        // Step 2: Resample to 16 kHz mono via OfflineAudioContext (no device, no conflicts).
-        const SR = 16000;
-        const numSamples = Math.ceil(decoded.duration * SR);
-        if (numSamples <= 0) throw new Error('audio duration is zero');
-
-        const offCtx = new OfflineAudioContext(1, numSamples, SR);
-        const src = offCtx.createBufferSource();
-        src.buffer = decoded;
-        src.connect(offCtx.destination);
-        src.start(0);
-        const rendered = await offCtx.startRendering();
-        const samples = rendered.getChannelData(0);
-
-        // Step 3: Write WAV header + int16 PCM samples
-        const wavBuffer = new ArrayBuffer(44 + samples.length * 2);
-        const view = new DataView(wavBuffer);
-        const writeStr = (off, str) => {
-            for (let i = 0; i < str.length; i++) view.setUint8(off + i, str.charCodeAt(i));
-        };
-        writeStr(0, 'RIFF');
-        view.setUint32(4,  36 + samples.length * 2, true);
-        writeStr(8, 'WAVE');
-        writeStr(12, 'fmt ');
-        view.setUint32(16, 16,       true);
-        view.setUint16(20, 1,        true);  // PCM
-        view.setUint16(22, 1,        true);  // mono
-        view.setUint32(24, SR,       true);
-        view.setUint32(28, SR * 2,   true);
-        view.setUint16(32, 2,        true);
-        view.setUint16(34, 16,       true);
-        writeStr(36, 'data');
-        view.setUint32(40, samples.length * 2, true);
-        let off = 44;
-        for (let i = 0; i < samples.length; i++) {
-            const s = Math.max(-1, Math.min(1, samples[i]));
-            view.setInt16(off, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
-            off += 2;
-        }
-        return wavBuffer;
-    };
-
-    const startPTT = async () => {
-        if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') return;
-        try {
-            // CRITICAL: Stop the mic visualizer BEFORE opening a new getUserMedia stream.
-            // Having two simultaneous captures on the same hardware device causes an
-            // access violation (0xC0000005) and crashes the Electron renderer.
-            stopMicVisualizer();
-
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-
-            const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-                ? 'audio/webm;codecs=opus'
-                : MediaRecorder.isTypeSupported('audio/webm')
-                    ? 'audio/webm'
-                    : 'audio/ogg';
-            pttMimeTypeRef.current = mimeType;
-            pttChunksRef.current = [];
-
-            // Capture current mic device id so the onstop callback can restart the visualizer
-            const capturedMicId = selectedMicIdRef.current;
-
-            const recorder = new MediaRecorder(stream, { mimeType });
-            recorder.ondataavailable = (e) => {
-                if (e.data && e.data.size > 0) pttChunksRef.current.push(e.data);
-            };
-            recorder.onstop = async () => {
-                // Release the recording stream immediately
-                stream.getTracks().forEach(t => t.stop());
-
-                // Restart the visualizer now that the hardware is free
-                if (capturedMicId) startMicVisualizer(capturedMicId);
-
-                const chunks = pttChunksRef.current;
-                pttChunksRef.current = [];
-                if (!chunks.length) return;
-                const rawBlob = new Blob(chunks, { type: pttMimeTypeRef.current });
-                if (rawBlob.size < 1000) return;
-
-                try {
-                    const wavBuffer = await _blobToWav(rawBlob);
-                    const uint8 = new Uint8Array(wavBuffer);
-                    let binary = '';
-                    const CHUNK = 8192;
-                    for (let i = 0; i < uint8.length; i += CHUNK) {
-                        binary += String.fromCharCode(...uint8.subarray(i, i + CHUNK));
-                    }
-                    safeEmit('audio_transcribe', { audio: btoa(binary), mime_type: 'audio/wav' });
-                    pushActivity('Processing voice…');
-                } catch (err) {
-                    console.error('[PTT] encode/convert error:', err);
-                    pushActivity(`Voice error: ${err.message}`);
-                }
-            };
-
-            recorder.start(250);
-            mediaRecorderRef.current = recorder;
-            setIsRecording(true);
-            pushActivity('Microphone active');
-        } catch (err) {
-            console.error('[PTT] start error:', err.name, err.message);
-            pushActivity(`Mic error: ${err.name}`);
-            // Restore visualizer if startPTT failed mid-way
-            const mid = selectedMicIdRef.current;
-            if (mid) startMicVisualizer(mid);
-        }
-    };
-
-    const stopPTT = () => {
-        const rec = mediaRecorderRef.current;
-        if (!rec) return;
-        try {
-            if (rec.state !== 'inactive') rec.stop();
-        } catch (_) {}
-        mediaRecorderRef.current = null;
-        setIsRecording(false);
-    };
-    // ──────────────────────────────────────────────────────────────────────────
-
-    const startMicVisualizer = async (deviceId) => {
-        // Clean up any existing resources first
-        stopMicVisualizer();
-        
-        try {
-            let stream;
-            try {
-                stream = await navigator.mediaDevices.getUserMedia({
-                    audio: deviceId ? { deviceId: { exact: deviceId } } : true
-                });
-            } catch (e) {
-                stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            }
-
-            // Store stream reference for cleanup
-            micStreamRef.current = stream;
-
-            // Create new AudioContext
-            const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-            audioContextRef.current = new AudioContextClass();
-            analyserRef.current = audioContextRef.current.createAnalyser();
-            analyserRef.current.fftSize = 64;
-
-            sourceRef.current = audioContextRef.current.createMediaStreamSource(stream);
-            sourceRef.current.connect(analyserRef.current);
-
-            const updateMicData = () => {
-                // Guard: check if refs still exist (component may have unmounted)
-                if (!analyserRef.current || !audioContextRef.current || audioContextRef.current.state === 'closed') {
-                    return;
-                }
-                const dataArray = new Uint8Array(analyserRef.current.frequencyBinCount);
-                analyserRef.current.getByteFrequencyData(dataArray);
-                const avg = dataArray.length ? dataArray.reduce((a, b) => a + b, 0) / dataArray.length : 0;
-                micLevelRef.current = avg;
-                setMicAudioData(Array.from(dataArray));
-                animationFrameRef.current = requestAnimationFrame(updateMicData);
-            };
-
-            updateMicData();
-        } catch (err) {
-            console.error("[MicVisualizer] Error accessing microphone:", err);
-        }
-    };
-
-    const stopMicVisualizer = () => {
-        // Cancel animation frame first
-        if (animationFrameRef.current) {
-            cancelAnimationFrame(animationFrameRef.current);
-            animationFrameRef.current = null;
-        }
-        
-        // Disconnect source
-        if (sourceRef.current) {
-            try {
-                sourceRef.current.disconnect();
-            } catch (e) {
-                // Source may already be disconnected
-            }
-            sourceRef.current = null;
-        }
-        
-        // Stop mic stream tracks
-        if (micStreamRef.current) {
-            try {
-                micStreamRef.current.getTracks().forEach(track => track.stop());
-            } catch (e) {
-                // Stream may already be stopped
-            }
-            micStreamRef.current = null;
-        }
-        
-        // Close AudioContext only if not already closed
-        if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
-            try {
-                audioContextRef.current.close();
-            } catch (e) {
-                console.warn('[AudioContext] Error closing:', e.message);
-            }
-        }
-        audioContextRef.current = null;
-        analyserRef.current = null;
-    };
 
     const startVideo = async () => {
         try {
@@ -1987,33 +1671,11 @@ function App() {
         if (isConnected) {
             safeEmit('stop_audio');
             setIsConnected(false);
-            setIsMuted(false);
             pushActivity('Session stopped');
         } else {
-            const selected = micDevices.find(d => d.deviceId === selectedMicId);
-            const deviceName = selected?.label || null;
-            const index = micDevices.findIndex(d => d.deviceId === selectedMicId);
-            safeEmit('start_audio', {
-                device_name: deviceName,
-                device_index: index >= 0 ? index : null,
-                muted: false,
-            });
+            safeEmit('start_audio', { device_name: null, device_index: null, muted: true });
             setIsConnected(true);
-            setIsMuted(false);
             pushActivity('Session started');
-        }
-    };
-
-    const toggleMute = () => {
-        if (!isConnected) return;
-
-        if (isMuted) {
-            setIsMuted(false);
-            pushActivity('Microphone unmuted');
-        } else {
-            stopPTT();
-            setIsMuted(true);
-            pushActivity('Microphone muted');
         }
     };
 
@@ -2302,12 +1964,6 @@ function App() {
             shortcut: 'P',
             run: () => togglePower(),
         },
-        {
-            id: 'toggle-mute',
-            label: isMuted ? 'Unmute Mic' : 'Mute Mic',
-            shortcut: 'M',
-            run: () => toggleMute(),
-        },
     ];
 
     return (
@@ -2386,10 +2042,10 @@ function App() {
                     </div>
                 </div>
 
-                {/* Center — activity waveform */}
+                {/* Center — activity waveform (AI output only) */}
                 <div className="flex-1 flex justify-center items-center mx-4 relative">
-                    <div className={`transition-opacity duration-300 ${isMuted ? 'opacity-30' : 'opacity-100'}`}>
-                        <TopAudioBar audioData={micAudioData} />
+                    <div className="opacity-70">
+                        <TopAudioBar audioData={aiAudioData} />
                     </div>
                     {isTyping && (
                         <div className="absolute right-0 flex items-center gap-1.5 text-[9px] font-mono text-cyan-400/70 tracking-widest">
@@ -2435,7 +2091,6 @@ function App() {
                     {/* Navigation Rail */}
                     <NavigationRail
                         isConnected={isConnected}
-                        isMuted={isMuted}
                         isVideoOn={isVideoOn}
                         isHandTrackingEnabled={isHandTrackingEnabled}
                         showCadWindow={showCadWindow}
@@ -2443,7 +2098,6 @@ function App() {
                         showImageWindow={showImageWindow}
                         showSettings={showSettings}
                         onTogglePower={togglePower}
-                        onToggleMute={toggleMute}
                         onToggleVideo={toggleVideo}
                         onToggleHand={handleToggleHand}
                         onToggleCad={handleToggleCad}
@@ -2514,7 +2168,7 @@ function App() {
                                 <div className="flex-1 min-h-0 flex items-center justify-center border-t border-[rgba(255,255,255,0.06)] bg-[rgba(4,7,15,0.55)]">
                                     <Visualizer
                                         audioData={aiAudioData}
-                                        isListening={isConnected && !isMuted}
+                                        isListening={isConnected}
                                         intensity={audioAmp}
                                         width={352}
                                         height={100}
@@ -2545,8 +2199,8 @@ function App() {
 
                         {/* Thin sub-header: AI state + status pill */}
                         <div className="h-9 shrink-0 border-b border-[rgba(255,255,255,0.05)] bg-[rgba(5,9,17,0.45)] flex items-center justify-between px-4 gap-4">
-                            {/* Left: AI waveform (idle when no audio) */}
-                            <div className={`transition-opacity duration-300 ${isMuted ? 'opacity-25' : 'opacity-70'}`}>
+                            {/* Left: AI waveform */}
+                            <div className="opacity-70">
                                 <TopAudioBar audioData={aiAudioData} />
                             </div>
 
@@ -2580,13 +2234,11 @@ function App() {
                         status={status}
                         socketConnected={socketConnected}
                         isConnected={isConnected}
-                        isMuted={isMuted}
                         isVideoOn={isVideoOn}
                         isHandTrackingEnabled={isHandTrackingEnabled}
                         recentLogs={activityLog}
                         fps={fps}
                         onTogglePower={togglePower}
-                        onToggleMute={toggleMute}
                         onToggleVideo={toggleVideo}
                     />
                 </div>
@@ -2609,11 +2261,8 @@ function App() {
                     >
                         <SettingsWindow
                             socket={socket}
-                            micDevices={micDevices}
                             speakerDevices={speakerDevices}
                             webcamDevices={webcamDevices}
-                            selectedMicId={selectedMicId}
-                            setSelectedMicId={setSelectedMicId}
                             selectedSpeakerId={selectedSpeakerId}
                             setSelectedSpeakerId={setSelectedSpeakerId}
                             selectedWebcamId={selectedWebcamId}
@@ -2773,12 +2422,10 @@ function App() {
                     <div className="z-20 flex justify-center pb-10 pointer-events-none">
                         <ToolsModule
                             isConnected={isConnected}
-                            isMuted={isMuted}
                             isVideoOn={isVideoOn}
                             isHandTrackingEnabled={isHandTrackingEnabled}
                             showSettings={showSettings}
                             onTogglePower={togglePower}
-                            onToggleMute={toggleMute}
                             onToggleVideo={toggleVideo}
                             onToggleSettings={() => setShowSettings(!showSettings)}
                             onToggleHand={() => setIsHandTrackingEnabled(!isHandTrackingEnabled)}

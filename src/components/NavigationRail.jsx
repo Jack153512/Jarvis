@@ -1,5 +1,5 @@
 import React from 'react';
-import { Box, Globe, Hand, ImageIcon, Mic, MicOff, Power, Settings, Video, VideoOff, Command, MessageSquare } from 'lucide-react';
+import { Box, Globe, Hand, ImageIcon, Power, Settings, Video, VideoOff, Command, MessageSquare } from 'lucide-react';
 
 /**
  * 3-segment arc ring — mirrors the Iron Man HUD's concentric status rings.
@@ -93,7 +93,6 @@ function RailButton({ active, disabled, label, shortLabel, onClick, children }) 
 
 function NavigationRail({
     isConnected,
-    isMuted,
     isVideoOn,
     isHandTrackingEnabled,
     showCadWindow,
@@ -102,7 +101,6 @@ function NavigationRail({
     showSettings,
     showConversations,
     onTogglePower,
-    onToggleMute,
     onToggleVideo,
     onToggleHand,
     onToggleCad,
@@ -131,11 +129,6 @@ function NavigationRail({
             </div>
 
             <TickSeparator />
-
-            <RailButton disabled={!isConnected} active={isConnected && !isMuted}
-                label={isMuted ? 'Unmute Mic' : 'Mute Mic'} shortLabel="MIC" onClick={onToggleMute}>
-                {isMuted ? <MicOff size={18} /> : <Mic size={18} />}
-            </RailButton>
 
             <RailButton active={isVideoOn} label={isVideoOn ? 'Disable Camera' : 'Enable Camera'}
                 shortLabel="CAM" onClick={onToggleVideo}>

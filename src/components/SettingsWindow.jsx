@@ -16,11 +16,8 @@ const TOOLS = [
 
 const SettingsWindow = ({
     socket,
-    micDevices,
     speakerDevices,
     webcamDevices,
-    selectedMicId,
-    setSelectedMicId,
     selectedSpeakerId,
     setSelectedSpeakerId,
     selectedWebcamId,
@@ -248,22 +245,6 @@ const SettingsWindow = ({
                         <option value="male">Male</option>
                     </select>
                 </div>
-            </div>
-
-            {/* Microphone Section */}
-            <div className="mb-4">
-                <h3 className="text-cyan-400 font-bold mb-2 text-xs uppercase tracking-wider opacity-80">Microphone</h3>
-                <select
-                    value={selectedMicId}
-                    onChange={(e) => setSelectedMicId(e.target.value)}
-                    className="w-full bg-gray-900 border border-cyan-800 rounded p-2 text-xs text-cyan-100 focus:border-cyan-400 outline-none"
-                >
-                    {micDevices.map((device, i) => (
-                        <option key={device.deviceId} value={device.deviceId}>
-                            {device.label || `Microphone ${i + 1}`}
-                        </option>
-                    ))}
-                </select>
             </div>
 
             {/* Speaker Section */}
