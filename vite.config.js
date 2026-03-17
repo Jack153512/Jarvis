@@ -14,4 +14,7 @@ export default defineConfig({
     optimizeDeps: {
         exclude: ['@mediapipe/tasks-vision'],
     },
+    build: {
+        chunkSizeWarningLimit: 600,
+    },
 })

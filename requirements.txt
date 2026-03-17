@@ -2,15 +2,15 @@
 # Local LLM Version - Fully Offline & Free
 # =========================================
 
-# Core Server
-fastapi>=0.100.0
-uvicorn>=0.23.0
-python-socketio>=5.8.0
-aiohttp>=3.8.0
+# Core Server (tested with Python 3.14)
+fastapi>=0.115.0
+uvicorn>=0.32.0
+python-socketio>=5.11.0
+aiohttp>=3.11.0
 
 # Local LLM (via Ollama)
 # Note: Install Ollama separately from https://ollama.ai/download
-# Then run: ollama pull qwen2.5-coder:7b-instruct
+# Then run: ollama pull qwen2.5:14b-instruct
 
 # Text-to-Speech (Free, uses Edge TTS)
 # Note: Requires version 7.2.7+ for reliable audio synthesis
@@ -52,6 +52,13 @@ transformers>=4.36.0
 
 # Web Automation
 playwright>=1.40.0
+
+# Web Search (no API key, multi-backend: bing, brave, duckduckgo, etc.)
+ddgs>=9.0.0
+duckduckgo-search>=4.0.0  # fallback if ddgs unavailable
+
+# System Info
+psutil>=5.9.0
 
 # Utilities
 python-multipart>=0.0.6

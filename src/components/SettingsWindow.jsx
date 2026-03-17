@@ -12,6 +12,8 @@ const TOOLS = [
     { id: 'create_project', label: 'Create Project' },
     { id: 'switch_project', label: 'Switch Project' },
     { id: 'list_projects', label: 'List Projects' },
+    { id: 'web_search', label: 'Web Search' },
+    { id: 'system_info', label: 'System Info' },
 ];
 
 const SettingsWindow = ({
@@ -31,6 +33,7 @@ const SettingsWindow = ({
 }) => {
     const [permissions, setPermissions] = useState({});
     const [voiceGender, setVoiceGender] = useState('male');
+    const [ttsRate, setTtsRate] = useState(-15); // -30 to +20, percent (e.g. -15 = -15% = slower)
     const [userName, setUserName] = useState('');
     const [loadedUserName, setLoadedUserName] = useState('');
     const [personality, setPersonality] = useState({
@@ -95,6 +98,13 @@ const SettingsWindow = ({
                         setVoiceGender('female');
                     }
                 }
+                // Parse speech rate (e.g. "-15%" -> -15, "+0%" -> 0)
+                const rateStr = tts.rate_en || tts.rate_vi || '-15%';
+                const rateMatch = rateStr.match(/^([+-]?\d+)%?$/);
+                if (rateMatch) {
+                    const val = parseInt(rateMatch[1], 10);
+                    if (val >= -30 && val <= 20) setTtsRate(val);
+                }
             }
         };
 
@@ -138,6 +148,15 @@ const SettingsWindow = ({
                 voice: voice_en,
                 auto_detect: true,
             }
+        });
+    };
+
+    const updateTtsRate = (percent) => {
+        const val = Math.max(-30, Math.min(20, percent));
+        setTtsRate(val);
+        const rateStr = (val >= 0 ? '+' : '') + val + '%';
+        socket.emit('update_settings', {
+            tts: { rate_en: rateStr, rate_vi: rateStr }
         });
     };
 
@@ -234,16 +253,34 @@ const SettingsWindow = ({
             {/* TTS Settings */}
             <div className="mb-6">
                 <h3 className="text-cyan-400 font-bold mb-3 text-xs uppercase tracking-wider opacity-80">Text-to-Speech</h3>
-                <div className="text-xs bg-gray-900/50 p-2 rounded border border-cyan-900/30">
-                    <label className="text-cyan-100/60 text-[10px] uppercase mb-1 block">Voice Profile</label>
-                    <select
-                        value={voiceGender}
-                        onChange={(e) => updateVoiceGender(e.target.value)}
-                        className="w-full bg-gray-800 border border-cyan-800/50 rounded p-1.5 text-xs text-cyan-100 focus:border-cyan-400 outline-none"
-                    >
-                        <option value="female">Female</option>
-                        <option value="male">Male</option>
-                    </select>
+                <div className="space-y-3">
+                    <div className="text-xs bg-gray-900/50 p-2 rounded border border-cyan-900/30">
+                        <label className="text-cyan-100/60 text-[10px] uppercase mb-1 block">Voice Profile</label>
+                        <select
+                            value={voiceGender}
+                            onChange={(e) => updateVoiceGender(e.target.value)}
+                            className="w-full bg-gray-800 border border-cyan-800/50 rounded p-1.5 text-xs text-cyan-100 focus:border-cyan-400 outline-none"
+                        >
+                            <option value="female">Female</option>
+                            <option value="male">Male</option>
+                        </select>
+                    </div>
+                    <div className="text-xs bg-gray-900/50 p-2 rounded border border-cyan-900/30">
+                        <div className="flex justify-between mb-1">
+                            <label className="text-cyan-100/60 text-[10px] uppercase block">Speech Speed</label>
+                            <span className="text-cyan-500 text-[10px]">{ttsRate > 0 ? '+' : ''}{ttsRate}%</span>
+                        </div>
+                        <input
+                            type="range"
+                            min="-30"
+                            max="20"
+                            step="5"
+                            value={ttsRate}
+                            onChange={(e) => updateTtsRate(parseInt(e.target.value, 10))}
+                            className="w-full accent-cyan-400 cursor-pointer h-1 bg-gray-800 rounded-lg appearance-none"
+                        />
+                        <p className="text-[10px] text-cyan-500/60 mt-0.5">Slower ← → Faster (default: -15%)</p>
+                    </div>
                 </div>
             </div>
 

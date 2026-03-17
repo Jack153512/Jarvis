@@ -79,6 +79,18 @@ class JarvisMemory:
     def delete_project(self, key: str) -> bool:
         return self._delete_key("project_memory", key)
 
+    def get_all_personal(self) -> Dict[str, str]:
+        """Return all personal memory key-value pairs for prompt injection."""
+        with sqlite3.connect(self.db_path) as conn:
+            cur = conn.execute("SELECT key, value FROM personal_memory")
+            return dict(cur.fetchall())
+
+    def get_all_project(self) -> Dict[str, str]:
+        """Return all project memory key-value pairs for prompt injection."""
+        with sqlite3.connect(self.db_path) as conn:
+            cur = conn.execute("SELECT key, value FROM project_memory")
+            return dict(cur.fetchall())
+
     def save_short_term(self, key: str, value: str) -> None:
         self._set_value("short_term_memory", key, value)
 

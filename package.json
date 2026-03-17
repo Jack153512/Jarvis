@@ -16,28 +16,29 @@
   "dependencies": {
     "@mediapipe/tasks-vision": "^0.10.22-rc.20250304",
     "@react-three/drei": "^9.99.0",
-    "@react-three/fiber": "^8.15.16",
-    "@types/three": "^0.160.0",
+    "@react-three/fiber": "^9.0.0",
+    "@types/three": "^0.170.0",
     "clsx": "^2.1.0",
     "framer-motion": "^11.0.0",
-    "lucide-react": "^0.300.0",
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0",
+    "katex": "^0.16.38",
+    "lucide-react": "^0.468.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
     "socket.io-client": "^4.7.4",
     "tailwind-merge": "^2.2.0",
-    "three": "^0.160.0"
+    "three": "^0.170.0"
   },
   "devDependencies": {
-    "@vitejs/plugin-react": "^4.2.1",
-    "jsdom": "^25.0.0",
-    "vitest": "^2.0.0",
-    "autoprefixer": "^10.4.17",
+    "@vitejs/plugin-react": "^6.0.0",
+    "autoprefixer": "^10.4.20",
     "concurrently": "^8.2.2",
     "cross-env": "^7.0.3",
-    "electron": "^28.2.0",
-    "postcss": "^8.4.35",
-    "tailwindcss": "^3.4.1",
-    "vite": "^5.1.0",
+    "electron": "^41.0.2",
+    "jsdom": "^25.0.0",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.15",
+    "vite": "^8.0.0",
+    "vitest": "^4.1.0",
     "wait-on": "^7.2.0"
   }
 }

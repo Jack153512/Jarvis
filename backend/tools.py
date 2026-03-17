@@ -129,6 +129,35 @@ tools_list = [
             "type": "object",
             "properties": {}
         }
+    },
+    {
+        "name": "web_search",
+        "description": "Search the web for up-to-date information. Use when the user asks about current events, recent news, documentation, or anything that may have changed since your training. Returns title, URL, and snippet for each result.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Search query (e.g., 'Python 3.12 release notes', 'latest news about AI')"
+                }
+            },
+            "required": ["query"]
+        }
+    },
+    {
+        "name": "system_info",
+        "description": "Retrieve system information: OS, CPU usage, RAM usage, GPU (if available). Use when the user asks about their computer, performance, hardware, or environment.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "sections": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional. Sections to include: 'os', 'cpu', 'memory', 'gpu'. If omitted, returns all."
+                }
+            },
+            "required": []
+        }
     }
 ]
 
@@ -162,6 +191,82 @@ def get_tools_prompt() -> str:
     lines.append("To use a tool, respond with JSON: {\"tool\": \"tool_name\", \"args\": {...}}")
     
     return "\n".join(lines)
+
+
+# Additional tools defined elsewhere (ada.py, server) — include in permissions sync
+EXTRA_TOOL_NAMES = ("print_stl", "discover_printers", "control_light", "list_smart_devices", "create_directory")
+
+
+def get_all_tool_names() -> list:
+    """Return all tool names (from tools_list + extras) for permissions sync."""
+    names = [t["name"] for t in tools_list]
+    for name in EXTRA_TOOL_NAMES:
+        if name not in names:
+            names.append(name)
+    return names
+
+
+def get_default_tool_permissions() -> dict:
+    """Return default permissions for all tools. New tools default to False for safety."""
+    defaults = {
+        "generate_cad": True,
+        "iterate_cad": False,
+        "run_web_agent": True,
+        "write_file": False,
+        "read_file": True,
+        "read_directory": True,
+        "create_project": True,
+        "switch_project": True,
+        "list_projects": True,
+        "web_search": True,
+        "system_info": True,
+        "print_stl": False,
+        "discover_printers": False,
+        "control_light": False,
+        "list_smart_devices": False,
+        "create_directory": False,
+    }
+    # Ensure tools_list tools have entries
+    for t in tools_list:
+        name = t.get("name")
+        if name and name not in defaults:
+            defaults[name] = False
+    return defaults
+
+
+def sync_tool_permissions(perms: dict) -> dict:
+    """Merge perms with defaults so all known tools have an entry. Returns new dict."""
+    defaults = get_default_tool_permissions()
+    out = dict(defaults)
+    out.update(perms)
+    # Only keep keys that are known tools
+    all_names = set(get_all_tool_names()) | set(defaults)
+    return {k: v for k, v in out.items() if k in all_names}
+
+
+def tools_to_ollama_format(tools: list = None) -> list:
+    """
+    Convert tools_list to Ollama API format for native tool calling.
+    Models like Qwen3 support this; Qwen2.5 may not.
+    """
+    source = tools or tools_list
+    out = []
+    for t in source:
+        name = t.get("name")
+        if not name:
+            continue
+        params = t.get("parameters") or {}
+        if isinstance(params.get("type"), str) and params["type"].lower() != "object":
+            params = {"type": "object", "properties": params.get("properties", {}), "required": params.get("required", [])}
+        out.append({
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": t.get("description", ""),
+                "parameters": params,
+            },
+        })
+    return out
 
 
 def format_tool_result(tool_name: str, result: any) -> str:

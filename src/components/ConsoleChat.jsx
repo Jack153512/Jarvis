@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef } from 'react';
 import { Send, Trash2 } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
+import MathText from './MathText';
 
 function TypingIndicator() {
     return (
@@ -53,7 +54,7 @@ function MessageBubble({ msg, showHeader }) {
                         ? 'text-[13.5px] text-[var(--text-1)] text-right'
                         : 'text-[13.5px] text-[var(--text-1)]'
                 }`}>
-                    {msg.text}
+                    <MathText>{msg.text}</MathText>
                 </div>
             </div>
         </div>
@@ -123,7 +124,7 @@ function ConsoleChat({ messages, inputValue, setInputValue, onSend, onKeyDown, i
                             AWAITING INPUT
                         </motion.div>
                         <p className="text-[11px] text-[var(--text-3)] opacity-50 max-w-[260px] text-center leading-relaxed">
-                            Type a message or press the mic button to speak.
+                            Type a message.
                         </p>
                     </div>
                 ) : (

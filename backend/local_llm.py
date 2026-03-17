@@ -1,11 +1,19 @@
+"""Async client for Ollama-based local LLM. Optimized for code generation and CAD workflows."""
 
 import aiohttp
 import asyncio
 import json
+import logging
 import re
-import sys
 from typing import AsyncGenerator, Optional, List, Dict, Any
 from dataclasses import dataclass, field
+
+logger = logging.getLogger("jarvis.llm")
+
+# Constants for DeepSeek-R1 think-block stripping
+_THINK_START_TAG = "<think>"
+_THINK_END_TAG = "</think>"
+_TAG_OVERLAP_BUFFER = 10  # Chars to keep in buffer when tag may span chunks
 
 
 @dataclass
@@ -14,13 +22,22 @@ class Message:
     content: str
 
 
-@dataclass 
+@dataclass
 class LLMConfig:
     base_url: str = "http://127.0.0.1:11434"
     model: str = "deepseek-r1:14b"  # 97.3% MATH, best reasoning for CAD
     temperature: float = 0.2  # Lower for deterministic geometric output
     context_length: int = 32768  # DeepSeek-R1 supports 32K context
     timeout: float = 240.0  # More time for reasoning model
+    max_history_messages: int = 40  # Sliding window: keep last N messages
+
+    def __post_init__(self):
+        if not 0 <= self.temperature <= 2:
+            raise ValueError("temperature must be between 0 and 2")
+        if self.timeout <= 0:
+            raise ValueError("timeout must be positive")
+        if self.context_length <= 0:
+            raise ValueError("context_length must be positive")
 
 
 class LocalLLM:
@@ -99,10 +116,10 @@ class LocalLLM:
         # Check if we're inside a <think> block
         if buffer.get('in_think', False):
             # Look for closing </think>
-            end_pos = text.find('</think>')
+            end_pos = text.find(_THINK_END_TAG)
             if end_pos != -1:
                 # Found end of think block - skip everything up to and including </think>
-                buffer['text'] = text[end_pos + 8:]  # 8 = len('</think>')
+                buffer['text'] = text[end_pos + len(_THINK_END_TAG):]
                 buffer['in_think'] = False
                 # Return any content after the think block
                 return buffer['text']
@@ -112,17 +129,17 @@ class LocalLLM:
                 return ''
         else:
             # Check for start of <think> block
-            start_pos = text.find('<think>')
+            start_pos = text.find(_THINK_START_TAG)
             if start_pos != -1:
                 # Found start of think block
                 before_think = text[:start_pos]
-                buffer['text'] = text[start_pos + 7:]  # 7 = len('<think>')
+                buffer['text'] = text[start_pos + len(_THINK_START_TAG):]
                 buffer['in_think'] = True
                 
                 # Check if there's also an end tag in the remaining buffer
-                end_pos = buffer['text'].find('</think>')
+                end_pos = buffer['text'].find(_THINK_END_TAG)
                 if end_pos != -1:
-                    buffer['text'] = buffer['text'][end_pos + 8:]
+                    buffer['text'] = buffer['text'][end_pos + len(_THINK_END_TAG):]
                     buffer['in_think'] = False
                 else:
                     buffer['text'] = ''
@@ -131,9 +148,9 @@ class LocalLLM:
             else:
                 # No think tags, return as-is but keep last few chars in buffer
                 # in case a tag spans chunks
-                if len(text) > 10:
-                    output = text[:-10]
-                    buffer['text'] = text[-10:]
+                if len(text) > _TAG_OVERLAP_BUFFER:
+                    output = text[:-_TAG_OVERLAP_BUFFER]
+                    buffer['text'] = text[-_TAG_OVERLAP_BUFFER:]
                     return output
                 return ''
     
@@ -155,7 +172,8 @@ class LocalLLM:
             Response with all think blocks removed
         """
         # Remove all <think>...</think> blocks (including multi-line)
-        cleaned = re.sub(r'<think>.*?</think>', '', response, flags=re.DOTALL | re.IGNORECASE)
+        pattern = rf'{re.escape(_THINK_START_TAG)}.*?{re.escape(_THINK_END_TAG)}'
+        cleaned = re.sub(pattern, '', response, flags=re.DOTALL | re.IGNORECASE)
         return cleaned.strip()
     
     async def check_availability(self) -> bool:
@@ -171,7 +189,7 @@ class LocalLLM:
                     return any(model_base in m for m in models)
                 return False
         except Exception as e:
-            print(f"[LocalLLM] Availability check failed: {e}")
+            logger.warning("Availability check failed: %s", e)
             return False
     
     async def list_models(self) -> List[str]:
@@ -186,16 +204,27 @@ class LocalLLM:
         except Exception:
             return []
     
-    def _build_messages(self, user_message: str) -> List[Dict[str, str]]:
-        """Build the messages array for the API call."""
+    def _build_messages(
+        self, user_message: str, system_prompt: Optional[str] = None
+    ) -> List[Dict[str, str]]:
+        """Build the messages array for the API call. Uses sliding window for history."""
         messages = []
-        
+        effective_system = system_prompt if system_prompt is not None else self.system_prompt
+
         # Add system prompt if set
-        if self.system_prompt:
-            messages.append({"role": "system", "content": self.system_prompt})
+        if effective_system:
+            messages.append({"role": "system", "content": effective_system})
         
-        # Add conversation history
-        for msg in self.conversation_history:
+        # Sliding window: keep last N messages to avoid context overflow
+        max_hist = getattr(self.config, "max_history_messages", 40) or 40
+        history = self.conversation_history
+        if len(history) > max_hist:
+            # Future: summarize dropped messages via LLM for better context retention
+            dropped = len(history) - max_hist
+            if dropped > 10 and logger.isEnabledFor(logging.DEBUG):
+                logger.debug("Dropping %d messages from history (max=%d)", dropped, max_hist)
+            history = history[-max_hist:]
+        for msg in history:
             messages.append({"role": msg.role, "content": msg.content})
         
         # Add current user message
@@ -204,25 +233,32 @@ class LocalLLM:
         return messages
     
     async def chat(
-        self, 
-        message: str, 
+        self,
+        message: str,
         stream: bool = True,
-        normalize: bool = True
+        normalize: bool = True,
+        system_prompt_override: Optional[str] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Send a message and stream the response.
-        
+
         Args:
             message: User message to send
             stream: Whether to stream the response (default True)
             normalize: Whether to strip <think> blocks (default True, for DeepSeek-R1)
-            
+            system_prompt_override: Optional temporary system prompt for this call only.
+                Uses this instead of self.system_prompt if provided; does not mutate instance state.
+            tools: Optional tools in Ollama format (e.g. from tools.tools_to_ollama_format()).
+                Native tool calling requires a supporting model (e.g. Qwen3).
+
         Yields:
             Response text chunks (normalized if enabled)
         """
         url = f"{self.config.base_url}/api/chat"
-        messages = self._build_messages(message)
-        
+        effective_system = system_prompt_override if system_prompt_override is not None else self.system_prompt
+        messages = self._build_messages(message, system_prompt=effective_system)
+
         payload = {
             "model": self.config.model,
             "messages": messages,
@@ -232,12 +268,13 @@ class LocalLLM:
                 "num_ctx": self.config.context_length
             }
         }
+        if tools:
+            payload["tools"] = tools
         
         session = await self._get_session()
         full_response = ""
-        raw_response = ""  # Keep raw for history
-        normalize_buffer = {}  # Buffer for streaming normalization
-        
+        normalize_buffer: Dict[str, Any] = {}  # Buffer for streaming normalization
+
         last_client_error: Optional[Exception] = None
 
         for attempt in range(2):
@@ -247,6 +284,20 @@ class LocalLLM:
                         error_text = await response.text()
                         raise Exception(f"Ollama API error ({response.status}): {error_text}")
 
+                    # Non-streaming: single JSON object (Ollama returns application/json)
+                    if not stream:
+                        data = await response.json()
+                        if "error" in data:
+                            raise Exception(f"Ollama error: {data['error']}")
+                        content = data.get("message", {}).get("content", "") or ""
+                        full_response = self.normalize_full_response(content) if normalize else content
+                        self.add_message("user", message)
+                        self.add_message("assistant", full_response)
+                        if full_response:
+                            yield full_response
+                        return
+
+                    # Streaming: NDJSON (application/x-ndjson)
                     async for line in response.content:
                         if not line:
                             continue
@@ -260,8 +311,6 @@ class LocalLLM:
                             if "message" in data:
                                 chunk = data["message"].get("content", "")
                                 if chunk:
-                                    raw_response += chunk
-
                                     if normalize:
                                         normalized_chunk = self._normalize_chunk(chunk, normalize_buffer)
                                         if normalized_chunk:
@@ -346,6 +395,7 @@ class LocalLLM:
     async def chat_complete(self, message: str) -> str:
         """
         Send a message and get the complete response (non-streaming).
+        Uses stream=False for a single API call instead of accumulating chunks.
         
         Args:
             message: User message to send
@@ -354,7 +404,7 @@ class LocalLLM:
             Complete response text
         """
         full_response = ""
-        async for chunk in self.chat(message, stream=True):
+        async for chunk in self.chat(message, stream=False):
             full_response += chunk
         return full_response
     
@@ -416,13 +466,8 @@ Requirements:
 
 Return ONLY the Python code, no explanations."""
 
-        # Temporarily set CAD-specific system prompt
-        original_system = self.system_prompt
-        self.set_system_prompt(cad_system_prompt)
-        
-        try:
-            if existing_code:
-                prompt = f"""Modify this build123d code based on the request.
+        if existing_code:
+            prompt = f"""Modify this build123d code based on the request.
 
 Current code:
 {existing_code}
@@ -430,46 +475,80 @@ Current code:
 Modification request: {description}
 
 Return the complete modified code."""
-            else:
-                prompt = f"Create a 3D model of: {description}"
-            
-            async for chunk in self.chat(prompt):
-                yield chunk
-        finally:
-            # Restore original system prompt
-            self.system_prompt = original_system
+        else:
+            prompt = f"Create a 3D model of: {description}"
+
+        async for chunk in self.chat(prompt, system_prompt_override=cad_system_prompt):
+            yield chunk
     
-    async def extract_tool_calls(self, response: str) -> List[Dict[str, Any]]:
+    def extract_tool_calls(self, response: str) -> List[Dict[str, Any]]:
         """
         Extract tool calls from LLM response.
-        Uses a simple JSON parsing approach for tool use.
-        
+        Handles nested JSON (e.g. args with objects).
+        Synchronous; no I/O.
+
+        Expected formats: {"tool": "name", "args": {...}} or {"name": "name", "arguments": "..."}
+
         Args:
-            response: LLM response text
-            
+            response: LLM response text (may contain markdown, code, or inline JSON)
+
         Returns:
-            List of tool call dictionaries
+            List of tool call dicts with "tool"/"name" and "args"/"arguments" keys
         """
         tool_calls = []
-        
-        # Look for JSON tool calls in the response
-        try:
-            # Try to find JSON objects in the response
-            import re
-            json_pattern = r'\{[^{}]*"tool"[^{}]*\}'
-            matches = re.findall(json_pattern, response, re.DOTALL)
-            
-            for match in matches:
+        i = 0
+        while i < len(response):
+            # Find start of potential tool call: {"tool" or {"name"
+            idx = response.find('"tool"', i)
+            if idx == -1:
+                idx = response.find('"name"', i)
+            if idx == -1:
+                idx = response.find("'tool'", i)
+            if idx == -1:
+                break
+            # Find the opening { before "tool"
+            start = response.rfind("{", 0, idx)
+            if start == -1:
+                i = idx + 1
+                continue
+            # Brace-match to find the closing }
+            depth = 0
+            end = -1
+            in_str = False
+            escape = False
+            quote = None
+            for j in range(start, len(response)):
+                c = response[j]
+                if escape:
+                    escape = False
+                    continue
+                if c == "\\" and in_str:
+                    escape = True
+                    continue
+                if not in_str:
+                    if c in '"\'':
+                        in_str = True
+                        quote = c
+                    elif c == "{":
+                        depth += 1
+                    elif c == "}":
+                        depth -= 1
+                        if depth == 0:
+                            end = j
+                            break
+                elif c == quote:
+                    in_str = False
+            if end != -1:
                 try:
-                    tool_call = json.loads(match)
-                    if "tool" in tool_call or "name" in tool_call:
+                    raw = response[start : end + 1]
+                    tool_call = json.loads(raw)
+                    if ("tool" in tool_call or "name" in tool_call) and tool_call not in tool_calls:
                         tool_calls.append(tool_call)
                 except json.JSONDecodeError:
-                    continue
-                    
-        except Exception:
-            pass
-        
+                    pass
+                i = end + 1
+            else:
+                i = idx + 1
         return tool_calls
 
 
@@ -510,7 +589,7 @@ _default_llm: Optional[LocalLLM] = None
 
 
 def get_llm(config: Optional[LLMConfig] = None) -> LocalLLM:
-    """Get the default LocalLLM instance."""
+    """Get the default LocalLLM instance. Config is only used on first call; ignored if instance exists."""
     global _default_llm
     if _default_llm is None:
         _default_llm = LocalLLM(config)

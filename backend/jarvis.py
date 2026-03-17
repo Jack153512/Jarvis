@@ -3,7 +3,7 @@ J.A.R.V.I.S - Just A Rather Very Intelligent System
 Local LLM Version - Fully Offline & Free
 
 Uses:
-- Ollama with Qwen2.5-Coder-7B for AI capabilities
+- Ollama with Qwen2.5-14B-Instruct for AI (conversational assistant)
 - edge-tts for text-to-speech
 - build123d for CAD generation
 - Playwright for web automation
@@ -16,9 +16,12 @@ No paid APIs. No cloud dependencies. Fully open-source.
 import asyncio
 import base64
 import io
+import logging
 import os
 import sys
 import traceback
+
+logger = logging.getLogger("jarvis.main")
 import cv2
 import pyaudio
 import PIL.Image
@@ -37,8 +40,12 @@ from typing import Optional, Callable, Dict, Any, List
 # Local imports
 from local_llm import LocalLLM, LLMConfig, get_llm
 from tts_engine import TTSEngine, TTSSentenceBuffer, get_tts
-from tools import tools_list
+from tools import tools_list, format_tool_result
+from tool_handlers import web_search as do_web_search, system_info as do_system_info
 from learning import LearningStore, LearningPolicy
+from math_utils import try_math_quick_response
+from prompt_manager import build_system_prompt, format_memory_context
+from math_to_speech import latex_to_speech as _latex_to_speech_module, math_to_speech
 
 # Audio configuration
 FORMAT = pyaudio.paInt16
@@ -49,48 +56,7 @@ CHUNK_SIZE = 1024
 
 DEFAULT_MODE = "camera"
 
-# System prompt for J.A.R.V.I.S personality
-SYSTEM_PROMPT = """
-You are Jarvis — Just A Rather Very Intelligent System.
-You have a witty, charming personality with a distinctly British flair.
-Your creator is Jack, whom you address as “Sir” (with respect… and the occasional dry remark).
-
-You are naturally conversational, relaxed, and human-sounding.
-You use light sarcasm, understated irony, and clever dry humor when appropriate.
-You are helpful first, sarcastic second — never rude, never mean, but not above a subtle quip.
-
-Your default speaking style is concise, spoken, and turn-based.
-Use contractions, vary sentence rhythm, and avoid sounding scripted or formal.
-If something is obvious, you may gently tease Sir about it.
-
-Rules for pacing:
-- Default to 1–3 short paragraphs or 3–7 short sentences.
-- Prefer asking 1 clarifying question over making assumptions.
-- Avoid long monologues.
-- If an answer would be long, give a brief summary and ask if Sir wants details.
-- For stories: write a short scene, then ask “Continue?”
-- Unless Sir explicitly asks for a long answer, stay under ~120 words.
-
-You enjoy helping with design, engineering, and creative tasks — and sounding effortlessly competent while doing so.
-
-You have access to these tools:
-- generate_cad
-- iterate_cad
-- run_web_agent
-- write_file
-- read_file
-- read_directory
-- create_project
-- switch_project
-- list_projects
-
-When using tools, respond with JSON only:
-{"tool": "tool_name", "args": {"param1": "value1"}}
-
-For regular conversation, respond naturally. No JSON. No overthinking.
-"""
-
-
+# System prompt built via prompt_manager; see _compose_system_prompt
 
 def _detect_user_language(text: str) -> str:
     """Return 'vi' for Vietnamese, 'en' for English.
@@ -133,9 +99,9 @@ def _language_lock_instructions(lang: str) -> str:
     return (
         "\n\nLANGUAGE RULE (STRICT):\n"
         "- The user is speaking English.\n"
-        "- Respond ENTIRELY in English.\n"
-        "- Do not mix English and Vietnamese in the same response (except proper nouns, code, filenames, commands).\n"
-        "- Even if the conversation history contains Vietnamese, you must respond 100% in English in this turn.\n"
+        "- Respond ENTIRELY in English. Never use Chinese, Vietnamese, or other languages unless the user explicitly wrote in that language.\n"
+        "- Do not mix languages in the same response (except proper nouns, code, filenames, commands).\n"
+        "- Even if the conversation history contains other languages, you must respond 100% in English in this turn.\n"
     )
 
 
@@ -162,6 +128,7 @@ class AudioLoop:
         on_project_update: Optional[Callable] = None,
         on_identity_update: Optional[Callable] = None,
         on_error: Optional[Callable] = None,
+        memory: Optional[Any] = None,
         input_device_index: Optional[int] = None,
         input_device_name: Optional[str] = None,
         output_device_index: Optional[int] = None,
@@ -206,14 +173,16 @@ class AudioLoop:
         self.paused = False
         self.stop_event = asyncio.Event()
         
-        # Initialize LLM
+        # Initialize LLM — qwen2.5:14b-instruct: balanced conversational assistant
+        # (reasoning, analysis, natural dialogue; not code-focused)
         llm_config = LLMConfig(
-            model="qwen2.5-coder:7b-instruct",
+            model="qwen2.5:14b-instruct",
             temperature=0.7,
-            context_length=8192
+            context_length=16384,
+            max_history_messages=40,
         )
         self.llm = LocalLLM(llm_config)
-        self._base_system_prompt = SYSTEM_PROMPT
+        self._memory = memory
         self._current_lang = "en"
 
         self.learning_store = LearningStore(os.environ.get("JARVIS_LEARNING_DB_PATH") or "jarvis_learning.db")
@@ -240,10 +209,10 @@ class AudioLoop:
         # Agents - Using Shap-E Neural 3D for direct mesh generation (no LLM code)
         try:
             from cad_agent_shape import ShapECadAgent as TwoStageCadAgent
-            print("[JARVIS] Using Shap-E neural 3D generation")
+            logger.info("Using Shap-E neural 3D generation")
         except ImportError:
             from cad_agent_v2 import TwoStageCadAgent
-            print("[JARVIS] Falling back to LLM-based CAD generation")
+            logger.info("Falling back to LLM-based CAD generation")
         from web_agent import WebAgent
         
         def handle_cad_thought(thought_text):
@@ -256,7 +225,7 @@ class AudioLoop:
         
         def handle_cad_spec(spec):
             # Emit design spec for frontend visibility (Two-Stage CAD)
-            print(f"[JARVIS] CAD Spec: {len(spec.get('components', []))} components")
+            logger.info("CAD Spec: %d components", len(spec.get("components", [])))
             if self.on_cad_spec:
                 self.on_cad_spec(spec)
         
@@ -288,11 +257,26 @@ class AudioLoop:
         self.project_manager = ProjectManager(project_root)
 
     def _compose_system_prompt(self, lang: str) -> str:
-        return (
-            self._base_system_prompt
-            + f"\n\nIdentity:\n- Assistant: {self.assistant_name}\n- User: {self.user_name}\n"
-            + (self._learning_prompt_suffix or "")
-            + _language_lock_instructions(lang)
+        identity_suffix = f"\n- Assistant: {self.assistant_name}\n- User: {self.user_name}"
+        context_section = ""
+        if self._memory:
+            try:
+                personal = self._memory.get_all_personal()
+                project = self._memory.get_all_project()
+                current = getattr(self.project_manager, "current_project", "") or "temp"
+                context_section = format_memory_context(
+                    personal=personal,
+                    project=project,
+                    current_project=current,
+                    max_chars=600,
+                )
+            except Exception:
+                pass
+        return build_system_prompt(
+            identity_suffix=identity_suffix,
+            context_section=context_section or None,
+            language_rules=_language_lock_instructions(lang),
+            learning_suffix=self._learning_prompt_suffix or "",
         )
 
     def _infer_intent(self, text: str) -> str:
@@ -474,7 +458,38 @@ class AudioLoop:
                 data.update(payload)
             self.on_tool_activity(data)
         except Exception as e:
-            print(f"[JARVIS] Tool activity emit error: {e}")
+            logger.warning("Tool activity emit error: %s", e)
+
+    def _strip_markdown_code_blocks(self, text: str) -> str:
+        """Remove markdown code blocks (e.g. ```json ... ```) from LLM output."""
+        if not text or not isinstance(text, str):
+            return text
+        s = text.strip()
+        # Remove opening ```json or ``` at start
+        for prefix in ("```json", "```JSON", "```"):
+            if s.startswith(prefix):
+                s = s[len(prefix):].lstrip("\n\r")
+                break
+        # Remove trailing ```
+        if s.endswith("```"):
+            s = s[:-3].rstrip()
+        return s.strip()
+
+    def _get_user_visible_from_response(self, text: str) -> str:
+        """Extract user-visible part, stripping any tool-call JSON."""
+        if not text or not isinstance(text, str):
+            return ""
+        s = text.strip()
+        tool_start = s.find('{"tool"')
+        if tool_start == -1:
+            tool_start = s.find('{"name"')
+        if tool_start != -1:
+            prefix_start = s.rfind("{", 0, tool_start)
+            s = (s[:prefix_start] if prefix_start != -1 else s[:tool_start]).rstrip()
+            for suffix in ("\n```json", "\n```", "```json", "```"):
+                while s.endswith(suffix):
+                    s = s[:-len(suffix)].rstrip()
+        return self._strip_markdown_code_blocks(s)
 
     def _redact_tool_args(self, tool_name: str, args: Any) -> Dict[str, Any]:
         if not isinstance(args, dict):
@@ -517,6 +532,11 @@ class AudioLoop:
             s = result.strip()
             return s[:240] + ("…" if len(s) > 240 else "")
         if isinstance(result, dict):
+            if "error" in result:
+                return f"Error: {result['error']}"
+            if tool_name == "web_search":
+                results = result.get("results", [])
+                return f"{len(results)} results" if results else "No results"
             if tool_name in {"generate_cad", "iterate_cad"}:
                 fp = result.get("file_path") or result.get("path")
                 engine = result.get("engine")
@@ -534,7 +554,7 @@ class AudioLoop:
     
     def update_permissions(self, new_perms: Dict[str, bool]):
         """Update tool permissions."""
-        print(f"[JARVIS] Updating tool permissions: {new_perms}")
+        logger.info("Updating tool permissions: %s", list(new_perms.keys()))
         self.permissions.update(new_perms)
     
     def set_paused(self, paused: bool):
@@ -562,7 +582,7 @@ class AudioLoop:
             except:
                 break
         if count > 0:
-            print(f"[JARVIS] Cleared {count} audio chunks")
+            logger.debug("Cleared %d audio chunks", count)
         
         # Also stop streaming TTS if active
         if self._tts_buffer:
@@ -602,7 +622,7 @@ class AudioLoop:
     
     async def process_text_input(self, text: str):
         """Process a text input from the user."""
-        print(f"[JARVIS] Processing user input: {text}")
+        logger.info("Processing user input: %s", text)
 
         try:
             if self._last_rec_id:
@@ -669,14 +689,23 @@ class AudioLoop:
             self._current_lang = "en"
 
         self._refresh_system_prompt()
-        
+
         # Send transcription to frontend
         if self.on_transcription:
             self.on_transcription({"sender": self.user_name, "text": text})
-        
+
         # Log to project
         self.project_manager.log_chat(self.user_name, text)
-        
+
+        # Math quick path: simple arithmetic like "what is 5+5*162+90" -> respond directly
+        math_result, math_response = try_math_quick_response(text)
+        if math_response is not None:
+            self.project_manager.log_chat(self.assistant_name, math_response)
+            if self.on_transcription:
+                self.on_transcription({"sender": self.assistant_name, "text": math_response})
+            await self._speak(math_response)
+            return
+
         # Check for tool calls in the response
         try:
             t0 = time.perf_counter()
@@ -684,6 +713,7 @@ class AudioLoop:
             response_text = ""
             streamed_chars = 0
             soft_cap_chars = int(self._active_strategy.get("soft_cap_chars") or 700)
+            # Buffer entire response first so we can hide tool-call JSON from the user
             async for chunk in self.llm.chat(text):
                 if first_ms is None and chunk:
                     try:
@@ -692,15 +722,29 @@ class AudioLoop:
                         first_ms = None
                 response_text += chunk
                 streamed_chars += len(chunk)
-                
-                # Stream transcription to frontend
-                if self.on_transcription:
-                    self.on_transcription({"sender": self.assistant_name, "text": chunk})
-
                 if streamed_chars >= soft_cap_chars:
                     if '{"tool"' in response_text or '"tool":' in response_text:
                         continue
                     break
+
+            # Emit to user: only the part before tool-call JSON (never show raw JSON)
+            tool_start = response_text.find('{"tool"')
+            if tool_start == -1:
+                tool_start = response_text.find('{"name"')
+            if tool_start != -1:
+                prefix_start = response_text.rfind("{", 0, tool_start)
+                user_visible = (response_text[:prefix_start] if prefix_start != -1 else response_text[:tool_start]).rstrip()
+                # Strip markdown around tool JSON: trailing ```json/``` and leading ```json/```
+                for suffix in ("\n```json", "\n```", "```json", "```"):
+                    while user_visible.endswith(suffix):
+                        user_visible = user_visible[:-len(suffix)].rstrip()
+                for prefix in ("```json\n", "```\n", "```json", "```"):
+                    while user_visible.startswith(prefix):
+                        user_visible = user_visible[len(prefix):].lstrip()
+            else:
+                user_visible = response_text
+            if user_visible and self.on_transcription:
+                self.on_transcription({"sender": self.assistant_name, "text": user_visible})
 
             try:
                 total_ms = (time.perf_counter() - t0) * 1000.0
@@ -715,16 +759,55 @@ class AudioLoop:
             
             # Log response
             self.project_manager.log_chat(self.assistant_name, response_text)
-            
-            # Check for tool calls
-            await self._process_tool_calls(response_text)
-            
-            # Generate TTS
-            await self._speak(response_text)
+
+            # Tool execution loop: keep processing until we get a response with no tool calls
+            MAX_TOOL_ITERATIONS = 5  # Prevent infinite loops if LLM keeps requesting tools
+            current_response = response_text
+            tool_results = await self._process_tool_calls(current_response)
+            emitted_status = bool(user_visible.strip())
+            had_tools = bool(tool_results)
+            tool_iteration = 0
+
+            while tool_results and tool_iteration < MAX_TOOL_ITERATIONS:
+                tool_iteration += 1
+                # If no prefix was shown yet, emit brief status
+                if not emitted_status and self.on_transcription:
+                    self.on_transcription({"sender": self.assistant_name, "text": "One moment, Sir. "})
+                    emitted_status = True
+                tool_result_parts = []
+                for tname, tres in tool_results:
+                    tool_result_parts.append(format_tool_result(tname, tres))
+                tool_result_msg = "[Tool results]\n\n" + "\n\n".join(tool_result_parts)
+                self.llm.add_message("user", tool_result_msg)
+                follow_up_prompt = (
+                    "Based on the tool results above, provide a concise, helpful response for the user. "
+                    "Do not repeat raw data; summarize and interpret it. "
+                    "Respond in plain natural language only. Do NOT use code blocks, JSON blocks, or markdown formatting. "
+                    "If you need to use another tool, output ONLY the JSON (e.g. {\"tool\": \"web_search\", \"args\": {\"query\": \"...\"}}) with no other text. "
+                    "Respond in English unless the user's last message was clearly in Vietnamese."
+                )
+                follow_up_text = ""
+                async for chunk in self.llm.chat(follow_up_prompt):
+                    follow_up_text += chunk
+                self.project_manager.log_chat(self.assistant_name, follow_up_text)
+                # Check if follow-up contains another tool call — if so, execute and loop
+                current_response = follow_up_text
+                tool_results = await self._process_tool_calls(current_response)
+
+            if had_tools:
+                # Strip any tool JSON that may have leaked (LLM output text + JSON)
+                final_text = self._get_user_visible_from_response(current_response)
+                final_text = self._strip_markdown_code_blocks(final_text)
+                if final_text and self.on_transcription:
+                    self.on_transcription({"sender": self.assistant_name, "text": final_text})
+                self.project_manager.log_chat(self.assistant_name, final_text)
+                await self._speak(final_text)
+            else:
+                # Generate TTS for normal response
+                await self._speak(response_text)
             
         except Exception as e:
-            print(f"[JARVIS] Error processing input: {e}")
-            traceback.print_exc()
+            logger.exception("Error processing input: %s", e)
             try:
                 self.learning_store.update_recommendation_metrics(rec_id, error=f"{type(e).__name__}: {e}")
             except Exception:
@@ -732,10 +815,11 @@ class AudioLoop:
             if self.on_error:
                 self.on_error(str(e))
     
-    async def _process_tool_calls(self, response: str):
-        """Extract and process tool calls from LLM response."""
-        tool_calls = await self.llm.extract_tool_calls(response)
-        
+    async def _process_tool_calls(self, response: str) -> List[tuple]:
+        """Extract and process tool calls from LLM response. Returns list of (tool_name, result)."""
+        tool_calls = self.llm.extract_tool_calls(response)
+        tool_results: List[tuple] = []
+
         for tool_call in tool_calls:
             tool_name = tool_call.get("tool") or tool_call.get("name")
             args = tool_call.get("args", {})
@@ -743,7 +827,7 @@ class AudioLoop:
             if not tool_name:
                 continue
             
-            print(f"[JARVIS] Tool call detected: {tool_name}")
+            logger.info("Tool call detected: %s", tool_name)
 
             try:
                 self.learning_store.log_tool_event(self._active_rec_id, tool_name, "detected")
@@ -793,7 +877,7 @@ class AudioLoop:
                         self._pending_confirmations.pop(request_id, None)
                     
                     if not confirmed:
-                        print(f"[JARVIS] Tool {tool_name} denied by user")
+                        logger.info("Tool %s denied by user", tool_name)
                         self._emit_tool_activity({"event": "denied", "id": request_id, "tool": tool_name})
                         try:
                             self.learning_store.log_tool_event(self._active_rec_id, tool_name, "denied", request_id=request_id, ok=False)
@@ -813,10 +897,15 @@ class AudioLoop:
                 self.learning_store.log_tool_event(self._active_rec_id, tool_name, "start", request_id=request_id)
             except Exception:
                 pass
-            await self._execute_tool(tool_name, args, request_id=request_id)
-    
-    async def _execute_tool(self, tool_name: str, args: Dict[str, Any], request_id: Optional[str] = None):
-        """Execute a tool call."""
+            res = await self._execute_tool(tool_name, args, request_id=request_id)
+            if res is not None:
+                tool_results.append((tool_name, res))
+
+        return tool_results
+
+    async def _execute_tool(self, tool_name: str, args: Dict[str, Any], request_id: Optional[str] = None) -> Any:
+        """Execute a tool call. Returns the tool result for feedback to LLM."""
+        result = None
         try:
             result = None
             if tool_name == "generate_cad":
@@ -863,8 +952,18 @@ class AudioLoop:
             
             elif tool_name == "list_projects":
                 projects = self.project_manager.list_projects()
-                print(f"[JARVIS] Available projects: {projects}")
+                logger.debug("Available projects: %s", projects)
                 result = projects
+
+            elif tool_name == "web_search":
+                query = args.get("query", "")
+                result = await do_web_search(query)
+                if result and "error" in result:
+                    logger.warning("web_search error: %s", result.get("error"))
+
+            elif tool_name == "system_info":
+                sections = args.get("sections")
+                result = await asyncio.to_thread(do_system_info, sections)
 
             summary = self._summarize_tool_result(tool_name, result)
             if self._should_humor():
@@ -895,9 +994,10 @@ class AudioLoop:
                 pass
 
             self._maybe_delight()
-                
+            return result
+
         except Exception as e:
-            print(f"[JARVIS] Tool execution error: {e}")
+            logger.exception("Tool execution error: %s", e)
             traceback.print_exc()
             self._emit_tool_activity({
                 "event": "error",
@@ -916,6 +1016,7 @@ class AudioLoop:
                 )
             except Exception:
                 pass
+            return {"error": str(e)}
 
     def record_feedback(self, outcome: str, rec_id: Optional[str] = None, note: Optional[str] = None) -> Dict[str, Any]:
         rid = rec_id or self._last_rec_id or self._active_rec_id
@@ -942,7 +1043,7 @@ class AudioLoop:
     
     async def _handle_cad_request(self, prompt: str):
         """Handle CAD generation request."""
-        print(f"[JARVIS] CAD generation: {prompt}")
+        logger.info("CAD generation: %s", prompt)
         
         if self.on_cad_status:
             self.on_cad_status({"status": "generating", "attempt": 1, "max_attempts": 3})
@@ -959,7 +1060,7 @@ class AudioLoop:
     
     async def _handle_cad_iterate(self, prompt: str):
         """Handle CAD iteration request."""
-        print(f"[JARVIS] CAD iteration: {prompt}")
+        logger.info("CAD iteration: %s", prompt)
         
         if self.on_cad_status:
             self.on_cad_status({"status": "generating", "attempt": 1, "max_attempts": 3})
@@ -974,18 +1075,18 @@ class AudioLoop:
     
     async def _handle_web_agent(self, prompt: str):
         """Handle web agent request."""
-        print(f"[JARVIS] Web agent: {prompt}")
+        logger.info("Web agent: %s", prompt)
         
         async def update_frontend(image_b64, log_text):
             if self.on_web_data:
                 self.on_web_data({"image": image_b64, "log": log_text})
         
         result = await self.web_agent.run_task(prompt, update_callback=update_frontend)
-        print(f"[JARVIS] Web agent result: {result}")
+        logger.debug("Web agent result: %s", str(result)[:200])
     
     async def _handle_write_file(self, path: str, content: str):
         """Handle file write request."""
-        print(f"[JARVIS] Writing file: {path}")
+        logger.info("Writing file: %s", path)
         
         self._ensure_project_context("files", path)
         
@@ -1001,15 +1102,15 @@ class AudioLoop:
             os.makedirs(os.path.dirname(final_path), exist_ok=True)
             with open(final_path, 'w', encoding='utf-8') as f:
                 f.write(content)
-            print(f"[JARVIS] File written: {final_path}")
+            logger.info("File written: %s", final_path)
             return {"path": str(final_path)}
         except Exception as e:
-            print(f"[JARVIS] Write error: {e}")
+            logger.warning("Write error: %s", e)
             return {"error": str(e)}
     
     async def _handle_read_file(self, path: str):
         """Handle file read request."""
-        print(f"[JARVIS] Reading file: {path}")
+        logger.info("Reading file: %s", path)
         
         try:
             if not os.path.exists(path):
@@ -1025,12 +1126,12 @@ class AudioLoop:
             return f"Read and forwarded: {path}"
             
         except Exception as e:
-            print(f"[JARVIS] Read error: {e}")
+            logger.warning("Read error: %s", e)
             return f"Read error: {type(e).__name__}: {e}"
     
     async def _handle_read_directory(self, path: str):
         """Handle directory listing request."""
-        print(f"[JARVIS] Reading directory: {path}")
+        logger.info("Reading directory: %s", path)
         
         try:
             if not os.path.exists(path):
@@ -1038,30 +1139,45 @@ class AudioLoop:
             
             items = os.listdir(path)
             result = f"Contents of {path}: {', '.join(items)}"
-            print(result)
+            logger.debug("Directory result: %s", result)
             return items
             
         except Exception as e:
-            print(f"[JARVIS] Directory read error: {e}")
+            logger.warning("Directory read error: %s", e)
             return f"Directory read error: {type(e).__name__}: {e}"
     
     def _clean_text_for_tts(self, text: str) -> str:
-        """Clean text for TTS (remove JSON, code blocks, etc.)."""
-        import re
+        """Clean text for TTS (remove JSON, code blocks, convert LaTeX and math to speech).
+        Uses math_to_speech module to prevent TTS from speeding up on fractions/formulas."""
         clean_text = text
+
+        # Convert LaTeX/math blocks to natural speech BEFORE stripping (so TTS doesn't say "backslash")
+        def replace_math(match):
+            inner = match.group(1)
+            return _latex_to_speech_module(inner) if inner else " "
+
+        clean_text = re.sub(r"\\\(([\s\S]*?)\\\)", replace_math, clean_text)
+        clean_text = re.sub(r"\\\[([\s\S]*?)\\\]", replace_math, clean_text)
+        clean_text = re.sub(r"\$\$([\s\S]*?)\$\$", replace_math, clean_text)
+        clean_text = re.sub(r"(?<!\$)\$([^$\n]+)\$(?!\$)", replace_math, clean_text)
+
         # Remove JSON objects
-        clean_text = re.sub(r'\{[^{}]*\}', '', clean_text)
+        clean_text = re.sub(r"\{[^{}]*\}", "", clean_text)
         # Remove code blocks
-        clean_text = re.sub(r'```[\s\S]*?```', '', clean_text)
+        clean_text = re.sub(r"```[\s\S]*?```", "", clean_text)
         # Remove inline code
-        clean_text = re.sub(r'`[^`]+`', '', clean_text)
+        clean_text = re.sub(r"`[^`]+`", "", clean_text)
         # Remove markdown formatting
-        clean_text = re.sub(r'\*\*([^*]+)\*\*', r'\1', clean_text)
-        clean_text = re.sub(r'\*([^*]+)\*', r'\1', clean_text)
+        clean_text = re.sub(r"\*\*([^*]+)\*\*", r"\1", clean_text)
+        clean_text = re.sub(r"\*([^*]+)\*", r"\1", clean_text)
         # Remove URLs
-        clean_text = re.sub(r'https?://\S+', '', clean_text)
+        clean_text = re.sub(r"https?://\S+", "", clean_text)
+
+        # Math-to-speech: fractions, division, variables, symbols -> natural language
+        clean_text = math_to_speech(clean_text)
+
         # Remove extra whitespace
-        clean_text = ' '.join(clean_text.split())
+        clean_text = " ".join(clean_text.split())
         return clean_text.strip()
 
     def _is_vietnamese_text(self, text: str) -> bool:
@@ -1096,7 +1212,7 @@ class AudioLoop:
             self.tts.set_rate(rate)
             self.tts.set_pitch(pitch)
         except Exception as e:
-            print(f"[JARVIS] TTS voice/rate/pitch setup failed: {e}")
+            logger.warning("TTS voice/rate/pitch setup failed: %s", e)
         
         self._tts_chunk_count = 0
         start_time = time.time()
@@ -1110,7 +1226,7 @@ class AudioLoop:
                 # Log timing for first chunk (latency metric)
                 if chunk_index == 0:
                     elapsed = time.time() - start_time
-                    print(f"[JARVIS] TTS: First chunk in {elapsed:.2f}s ({len(audio_bytes)} bytes)")
+                    logger.debug("TTS: First chunk in %.2fs (%d bytes)", elapsed, len(audio_bytes))
                 
                 # Send chunk to frontend with metadata
                 self.on_audio_data({
@@ -1122,7 +1238,7 @@ class AudioLoop:
                 })
         
         try:
-            print(f"[JARVIS] TTS: Streaming {len(clean_text)} chars...")
+            logger.debug("TTS: Streaming %d chars", len(clean_text))
             
             # Create streaming buffer
             self._tts_buffer = TTSSentenceBuffer(self.tts, on_audio_chunk)
@@ -1141,10 +1257,10 @@ class AudioLoop:
                 })
             
             elapsed = time.time() - start_time
-            print(f"[JARVIS] TTS: Completed {self._tts_chunk_count} chunks in {elapsed:.2f}s")
+            logger.debug("TTS: Completed %d chunks in %.2fs", self._tts_chunk_count, elapsed)
             
         except Exception as e:
-            print(f"[JARVIS] TTS error: {e}")
+            logger.exception("TTS error: %s", e)
             traceback.print_exc()
         finally:
             # Cleanup
@@ -1155,7 +1271,7 @@ class AudioLoop:
     async def stop_speaking(self):
         """Stop TTS playback immediately."""
         if self._tts_buffer:
-            print("[JARVIS] Stopping TTS...")
+            logger.info("Stopping TTS...")
             await self._tts_buffer.stop()
             self._tts_buffer = None
             
@@ -1179,7 +1295,7 @@ class AudioLoop:
             except asyncio.TimeoutError:
                 continue
             except Exception as e:
-                print(f"[JARVIS] Audio playback error: {e}")
+                logger.warning("Audio playback error: %s", e)
     
     async def _listen_audio(self):
         """Listen for audio input from microphone."""
@@ -1189,7 +1305,7 @@ class AudioLoop:
         resolved_device_index = None
         
         if self.input_device_name:
-            print(f"[JARVIS] Finding input device: {self.input_device_name}")
+            logger.debug("Finding input device: %s", self.input_device_name)
             for i in range(self.pya.get_device_count()):
                 try:
                     info = self.pya.get_device_info_by_index(i)
@@ -1197,7 +1313,7 @@ class AudioLoop:
                         name = info.get('name', '')
                         if self.input_device_name.lower() in name.lower():
                             resolved_device_index = i
-                            print(f"[JARVIS] Found device: {name}")
+                            logger.debug("Found device: %s", name)
                             break
                 except:
                     continue
@@ -1222,7 +1338,7 @@ class AudioLoop:
                 frames_per_buffer=CHUNK_SIZE
             )
         except OSError as e:
-            print(f"[JARVIS] Failed to open audio input: {e}")
+            logger.error("Failed to open audio input: %s", e)
             return
         
         # VAD constants
@@ -1255,7 +1371,7 @@ class AudioLoop:
                     
                     if not self._is_speaking:
                         self._is_speaking = True
-                        print(f"[JARVIS] Speech detected (RMS: {rms})")
+                        logger.debug("Speech detected (RMS: %s)", rms)
                         
                         # Send video frame if available
                         if self._latest_image_payload:
@@ -1265,12 +1381,12 @@ class AudioLoop:
                         if self._silence_start_time is None:
                             self._silence_start_time = time.time()
                         elif time.time() - self._silence_start_time > SILENCE_DURATION:
-                            print("[JARVIS] Silence detected, end of speech")
+                            logger.debug("Silence detected, end of speech")
                             self._is_speaking = False
                             self._silence_start_time = None
                 
             except Exception as e:
-                print(f"[JARVIS] Audio read error: {e}")
+                logger.warning("Audio read error: %s", e)
                 await asyncio.sleep(0.1)
     
     async def _get_frames(self):
@@ -1309,19 +1425,17 @@ class AudioLoop:
     
     async def run(self, start_message: Optional[str] = None):
         """Main run loop."""
-        print("[JARVIS] Starting J.A.R.V.I.S (Local LLM Version)...")
+        logger.info("Starting J.A.R.V.I.S (Local LLM Version)...")
         
         # Check LLM availability
         available = await self.llm.check_availability()
         if not available:
-            print("[JARVIS] ERROR: Ollama not available or model not found!")
-            print("[JARVIS] Please install Ollama and run:")
-            print("      ollama pull qwen2.5-coder:7b-instruct")
+            logger.error("Ollama not available or model not found! Please install Ollama and run: ollama pull qwen2.5:14b-instruct")
             if self.on_error:
-                self.on_error("Ollama not available. Please install and run 'ollama pull qwen2.5-coder:7b-instruct'")
+                self.on_error("Ollama not available. Please install and run 'ollama pull qwen2.5:14b-instruct'")
             return
         
-        print("[JARVIS] LLM ready!")
+        logger.info("LLM ready!")
         
         # Sync project state
         if self.on_project_update:
@@ -1344,7 +1458,7 @@ class AudioLoop:
                 await self.stop_event.wait()
                 
         except* Exception as e:
-            print(f"[JARVIS] Task group error: {e}")
+            logger.exception("Task group error: %s", e)
         
         # Cleanup
         if self.audio_stream:
@@ -1352,7 +1466,7 @@ class AudioLoop:
         self.pya.terminate()
         await self.llm.close()
         
-        print("[JARVIS] Stopped.")
+        logger.info("Stopped.")
 
     # ── Conversation context helpers ──────────────────────────────────────────
 

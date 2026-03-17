@@ -5,7 +5,7 @@ FastAPI + Socket.IO server for the J.A.R.V.I.S desktop application.
 Fully offline, no paid APIs required.
 
 Uses:
-- Ollama with Qwen2.5-Coder-7B for AI
+- Ollama with Qwen2.5-14B-Instruct for AI
 - edge-tts for text-to-speech
 - faster-whisper for speech-to-text (via frontend audio_transcribe)
 """
@@ -104,6 +104,7 @@ import shutil
 from typing import Optional
 
 from memory import JarvisMemory
+from tools import sync_tool_permissions, get_default_tool_permissions
 
 # Ensure imports work
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -327,8 +328,8 @@ DEFAULT_SETTINGS = {
     "llm": {
         "provider": "ollama",
         "base_url": "http://127.0.0.1:11434",
-        "model": "qwen2.5-coder:7b-instruct",
-        "code_model": "qwen2.5-coder:7b-instruct"
+        "model": "qwen2.5:14b-instruct",
+        "code_model": "qwen2.5:14b-instruct"
     },
     "tts": {
         "enabled": True,
@@ -336,31 +337,67 @@ DEFAULT_SETTINGS = {
         "voice_en": "en-US-GuyNeural",
         "voice_vi": "vi-VN-HoaiMyNeural",
         "auto_detect": True,
-        "rate_en": "+0%",
+        "rate_en": "-15%",
         "pitch_en": "+0Hz",
-        "rate_vi": "+0%",
+        "rate_vi": "-15%",
         "pitch_vi": "+0Hz"
     },
     "stt": {
         "provider": "faster-whisper",
         "model_size": "small"
     },
-    "tool_permissions": {
-        "generate_cad": True,
-        "iterate_cad": False,
-        "run_web_agent": True,
-        "write_file": False,
-        "read_file": True,
-        "read_directory": True,
-        "create_project": True,
-        "switch_project": True,
-        "list_projects": True
-    }
+    "tool_permissions": get_default_tool_permissions(),
 }
 
 SETTINGS = copy.deepcopy(DEFAULT_SETTINGS)
 
 SETTINGS_LOCK = asyncio.Lock()
+
+
+def validate_settings(settings: dict) -> None:
+    """Validate and fix settings in place. Logs warnings for invalid values."""
+    if not isinstance(settings, dict):
+        return
+    # Identity
+    ident = settings.get("identity")
+    if isinstance(ident, dict):
+        for k in ("assistant_name", "user_name"):
+            v = ident.get(k)
+            if v is not None and not isinstance(v, str):
+                ident[k] = str(v)[:100]
+                logger.warning("Settings: %s.%s coerced to string", "identity", k)
+    # LLM
+    llm = settings.get("llm")
+    if isinstance(llm, dict):
+        if "temperature" in llm:
+            try:
+                t = float(llm["temperature"])
+                if not 0 <= t <= 2:
+                    llm["temperature"] = 0.7
+                    logger.warning("Settings: llm.temperature out of range, reset to 0.7")
+            except (TypeError, ValueError):
+                llm["temperature"] = 0.7
+        if "base_url" in llm and llm["base_url"] and not isinstance(llm["base_url"], str):
+            llm["base_url"] = "http://127.0.0.1:11434"
+    # Personality
+    pers = settings.get("personality")
+    if isinstance(pers, dict):
+        for k in ("humor_rate", "delight_rate"):
+            if k in pers:
+                try:
+                    v = float(pers[k])
+                    if not 0 <= v <= 1:
+                        pers[k] = 0.06 if k == "humor_rate" else 0.02
+                        logger.warning("Settings: personality.%s out of range", k)
+                except (TypeError, ValueError):
+                    pers[k] = 0.06 if k == "humor_rate" else 0.02
+    # Tool permissions: ensure all values are bool
+    perms = settings.get("tool_permissions")
+    if isinstance(perms, dict):
+        for k, v in list(perms.items()):
+            if not isinstance(v, bool):
+                perms[k] = False
+                logger.warning("Settings: tool_permissions.%s coerced to False", k)
 
 
 def load_settings():
@@ -373,9 +410,16 @@ def load_settings():
                 # Deep merge
                 for key, value in loaded.items():
                     if isinstance(value, dict) and key in SETTINGS:
-                        SETTINGS[key].update(value)
+                        if key == "tool_permissions":
+                            SETTINGS[key] = sync_tool_permissions(value)
+                        else:
+                            SETTINGS[key].update(value)
                     else:
                         SETTINGS[key] = value
+                # Ensure tool_permissions is synced after merge
+                if "tool_permissions" in SETTINGS:
+                    SETTINGS["tool_permissions"] = sync_tool_permissions(SETTINGS["tool_permissions"])
+                validate_settings(SETTINGS)
             logger.info("Loaded settings")
         except Exception as e:
             logger.exception("Error loading settings: %s", e)
@@ -384,6 +428,9 @@ def load_settings():
 def save_settings():
     """Save settings to file."""
     try:
+        # Sync tool_permissions before save so new tools get defaults
+        if "tool_permissions" in SETTINGS:
+            SETTINGS["tool_permissions"] = sync_tool_permissions(SETTINGS["tool_permissions"])
         tmp_path = f"{SETTINGS_FILE}.tmp"
         with open(tmp_path, 'w', encoding='utf-8') as f:
             json.dump(SETTINGS, f, indent=4, ensure_ascii=False)
@@ -563,7 +610,7 @@ def _trigger_llm_warmup():
 
             cfg = LLMConfig(
                 base_url=base_url or "http://127.0.0.1:11434",
-                model=model or "qwen2.5-coder:7b-instruct",
+                model=model or "qwen2.5:14b-instruct",
                 temperature=0.0,
                 context_length=2048,
                 timeout=30.0,
@@ -728,7 +775,8 @@ async def start_audio(sid, data=None):
         assistant_name = identity_cfg.get("assistant_name") if isinstance(identity_cfg, dict) else None
         personality_cfg = SETTINGS.get("personality", {}) if isinstance(SETTINGS, dict) else {}
         audio_loop = jarvis.AudioLoop(
-            video_mode="none", 
+            video_mode="none",
+            memory=MEMORY, 
             on_audio_data=on_audio_data,
             on_cad_data=on_cad_data,
             on_web_data=on_web_data,
@@ -862,8 +910,8 @@ async def shutdown(sid, data=None):
 async def user_input(sid, data):
     """Handle text input from user."""
     text = data.get('text')
-    print(f"[SERVER] User input: {text}")
-    
+    logger.info("User input: %s", text)
+
     if not audio_loop:
         await sio.emit('error', {'msg': 'J.A.R.V.I.S not running'})
         return
@@ -1488,14 +1536,14 @@ async def update_settings(sid, data=None):
             keys = list(payload.keys())
         else:
             keys = []
-        print(f"[SERVER] Updating settings: {keys}")
+        logger.info("Updating settings: %s", keys)
 
         async with SETTINGS_LOCK:
             if isinstance(payload, dict) and "tool_permissions" in payload and isinstance(payload.get("tool_permissions"), dict):
                 SETTINGS["tool_permissions"].update(payload["tool_permissions"])
 
             if isinstance(payload, dict) and "llm" in payload:
-                print("[SERVER] Ignoring client LLM settings update (model selection is managed internally).")
+                logger.info("Ignoring client LLM settings update (model selection is managed internally)")
 
             if isinstance(payload, dict) and "tts" in payload and isinstance(payload.get("tts"), dict):
                 SETTINGS["tts"].update(payload["tts"])
@@ -1652,8 +1700,8 @@ async def update_tool_permissions(sid, data=None):
 
 
 if __name__ == "__main__":
-    print("[SERVER] Starting uvicorn server on http://127.0.0.1:8000")
-    print("[SERVER] /status endpoint should be available immediately")
+    logger.info("Starting uvicorn server on http://127.0.0.1:8000")
+    logger.info("/status endpoint should be available immediately")
     uvicorn.run(
         "server:app_socketio",
         host="127.0.0.1",

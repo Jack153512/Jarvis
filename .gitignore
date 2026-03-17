@@ -12,6 +12,8 @@ env/
 backend/reference.jpg
 backend/settings.json
 backend/last_cad_generation.json
+backend/jarvis_learning.db
+backend/jarvis_memory.db
 long_term_memory/
 projects/
 output.stl

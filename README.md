@@ -42,7 +42,7 @@ pip install -r requirements.txt
 **Install Ollama and pull the model:**
 
 1. Install from [ollama.ai](https://ollama.ai/download).
-2. In a terminal: `ollama pull qwen2.5-coder:7b-instruct`
+2. In a terminal: `ollama pull qwen2.5:14b-instruct`
 
 ### 3. Frontend (Node)
 
@@ -87,7 +87,7 @@ Settings (identity, LLM, TTS, tools) are in `backend/settings.json`. That file i
 ## Troubleshooting
 
 - **“Python backend failed to start”** — Activate the same `.venv` you used for `pip install`, or install Python 3.11 and run again (Windows uses `py -3.11`).
-- **“Ollama / model not found”** — Install Ollama and run `ollama pull qwen2.5-coder:7b-instruct`.
+- **“Ollama / model not found”** — Install Ollama and run `ollama pull qwen2.5:14b-instruct`.
 - **Port 5173 in use** — Another app is using it; close it or change the port in the Vite config.
 
 ## NOTE

@@ -38,7 +38,7 @@ from playwright.async_api import async_playwright, Page, Browser as PlaywrightBr
 # Configuration
 SCREEN_WIDTH = 1440
 SCREEN_HEIGHT = 900
-DEFAULT_MODEL = "qwen2.5-coder:7b-instruct"  # Available local model
+DEFAULT_MODEL = "qwen2.5:14b-instruct"  # Balanced conversational assistant
 
 
 class WebAgent:
